@@ -14,6 +14,15 @@
 
 static const char* TAG="HTTPD";
 
+static void send_json_error(httpd_req_t *req, const char *status, const char *message)
+{
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "application/json");
+    char payload[160];
+    snprintf(payload, sizeof(payload), "{\"ok\":false,\"error\":\"%s\"}", message ? message : "unknown error");
+    httpd_resp_sendstr(req, payload);
+}
+
 static esp_err_t root_get_handler(httpd_req_t *req){
     const char* html =
     "<!doctype html><html><head><meta charset='utf-8'><title>Terrarium S3</title>"
@@ -123,7 +132,13 @@ static esp_err_t api_post_handler(httpd_req_t *req){
     dome_bus_write( 0x06, &uva_b, 1);
 
     // UVB with UVI clamp via calibration k
-    float k=0, uvi_max=0; calib_get_uvb(&k,&uvi_max);
+    float k=0, uvi_max=0;
+    esp_err_t calib_err = calib_get_uvb(&k,&uvi_max);
+    if (calib_err != ESP_OK){
+        ESP_LOGW(TAG, "calib_get_uvb failed during POST: %s", esp_err_to_name(calib_err));
+        k = 0;
+        uvi_max = 0;
+    }
     int uvb_set = cJSON_GetObjectItem(uvb,"set")->valueint; // permille
     float allowed_duty_pm = (uvi_max>0 && k>0) ? (uvi_max / k) : uvb_set;
     if (uvb_set > (int)allowed_duty_pm) uvb_set = (int)allowed_duty_pm;
@@ -187,7 +202,13 @@ static esp_err_t status_handler(httpd_req_t *req){
 }
 
 static esp_err_t calib_get_handler(httpd_req_t *req){
-    float k=0, uvi_max=0; calib_get_uvb(&k,&uvi_max);
+    float k=0, uvi_max=0;
+    esp_err_t err = calib_get_uvb(&k,&uvi_max);
+    if (err != ESP_OK){
+        ESP_LOGE(TAG, "calib_get_uvb failed: %s", esp_err_to_name(err));
+        send_json_error(req, "500 Internal Server Error", esp_err_to_name(err));
+        return ESP_OK;
+    }
     cJSON *j=cJSON_CreateObject();
     cJSON_AddNumberToObject(j,"k",k);
     cJSON_AddNumberToObject(j,"uvi_max",uvi_max);
@@ -200,14 +221,49 @@ static esp_err_t calib_get_handler(httpd_req_t *req){
 
 static esp_err_t calib_post_handler(httpd_req_t *req){
     char buf[256]; int r=httpd_req_recv(req, buf, sizeof(buf)-1); if(r<=0) return ESP_FAIL; buf[r]=0;
-    cJSON* j=cJSON_Parse(buf); if(!j) return ESP_FAIL;
-    float duty_pm = cJSON_GetObjectItem(j,"duty_pm")->valuedouble;
-    float uvi     = cJSON_GetObjectItem(j,"uvi")->valuedouble;
-    float uvi_max = cJSON_GetObjectItem(j,"uvi_max")->valuedouble;
-    calib_init();
-    if (uvi_max>0) calib_set_uvb_uvi_max(uvi_max);
-    if (duty_pm>0 && uvi>0) calib_set_uvb(duty_pm, uvi);
+    cJSON* j=cJSON_Parse(buf);
+    if(!j){
+        send_json_error(req, "400 Bad Request", "invalid json");
+        return ESP_OK;
+    }
+
+    cJSON* duty_node = cJSON_GetObjectItem(j,"duty_pm");
+    cJSON* uvi_node = cJSON_GetObjectItem(j,"uvi");
+    cJSON* uvi_max_node = cJSON_GetObjectItem(j,"uvi_max");
+
+    bool duty_valid = duty_node && cJSON_IsNumber(duty_node);
+    bool uvi_valid = uvi_node && cJSON_IsNumber(uvi_node);
+    bool uvi_max_valid = uvi_max_node && cJSON_IsNumber(uvi_max_node);
+
+    if ((!duty_valid || !uvi_valid) && !uvi_max_valid){
+        cJSON_Delete(j);
+        send_json_error(req, "400 Bad Request", "missing calibration values");
+        return ESP_OK;
+    }
+
+    esp_err_t err = ESP_OK;
+
+    if (uvi_max_valid && uvi_max_node->valuedouble > 0){
+        err = calib_set_uvb_uvi_max((float)uvi_max_node->valuedouble);
+        if (err != ESP_OK){
+            ESP_LOGE(TAG, "calib_set_uvb_uvi_max failed: %s", esp_err_to_name(err));
+        }
+    }
+
+    if (err == ESP_OK && duty_valid && uvi_valid && duty_node->valuedouble > 0 && uvi_node->valuedouble > 0){
+        err = calib_set_uvb((float)duty_node->valuedouble, (float)uvi_node->valuedouble);
+        if (err != ESP_OK){
+            ESP_LOGE(TAG, "calib_set_uvb failed: %s", esp_err_to_name(err));
+        }
+    }
+
     cJSON_Delete(j);
+
+    if (err != ESP_OK){
+        send_json_error(req, "500 Internal Server Error", esp_err_to_name(err));
+        return ESP_OK;
+    }
+
     httpd_resp_set_type(req,"application/json");
     httpd_resp_sendstr(req,"{\"ok\":true}");
     return ESP_OK;
@@ -249,7 +305,10 @@ static esp_err_t alarms_mute_post(httpd_req_t *req){
 }
 
 void httpd_start_basic(void){
-    calib_init();
+    esp_err_t calib_err = calib_init();
+    if (calib_err != ESP_OK){
+        ESP_LOGE(TAG, "calib_init failed: %s", esp_err_to_name(calib_err));
+    }
     sensors_init();
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     httpd_handle_t server = NULL;
