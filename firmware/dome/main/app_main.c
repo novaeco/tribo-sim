@@ -52,12 +52,24 @@ static bool interlock_active(void){
     return level == 0; // active-low
 }
 
+static void therm_hard_init(void){
+#if DOME_THERM_GPIO >= 0
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << DOME_THERM_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&cfg);
+#endif
+}
+
 static bool therm_hard_active(void){
 #if DOME_THERM_GPIO >= 0
-    gpio_config_t cfg = { .pin_bit_mask = 1ULL<<DOME_THERM_GPIO, .mode=GPIO_MODE_INPUT, .pull_up_en=GPIO_PULLUP_ENABLE };
-    gpio_config(&cfg);
     return gpio_get_level(DOME_THERM_GPIO) == 0;
 #else
+    ESP_LOGW(TAG, "therm_hard_active() invoked but DOME_THERM_GPIO < 0");
     return false;
 #endif
 }
@@ -130,6 +142,7 @@ void app_main(void){
     dome_assert_int(false);
 
     interlock_init();
+    therm_hard_init();
 
     // LEDC channels
     ESP_ERROR_CHECK(ledc_cc_init());
