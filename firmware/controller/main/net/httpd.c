@@ -11,8 +11,153 @@
 #include "drivers/tca9548a.h"   // + si TCA_PRESENT
 #include "include/config.h"
 #include <stdio.h>              // + pour snprintf
+#include <stdbool.h>
+#include <math.h>
 
 static const char* TAG="HTTPD";
+
+static esp_err_t json_get_object(cJSON *parent, const char *key, cJSON **out)
+{
+    if (!parent || !cJSON_IsObject(parent)) {
+        ESP_LOGW(TAG, "JSON parent invalid when looking for '%s'", key);
+        return ESP_ERR_INVALID_ARG;
+    }
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(parent, key);
+    if (!item || !cJSON_IsObject(item)) {
+        ESP_LOGW(TAG, "JSON key '%s' missing or not an object", key);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (out) {
+        *out = item;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t json_get_int(cJSON *parent, const char *key, int min, int max, int *out)
+{
+    if (!parent || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(parent, key);
+    if (!item) {
+        ESP_LOGW(TAG, "JSON key '%s' missing", key);
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (!cJSON_IsNumber(item)) {
+        ESP_LOGW(TAG, "JSON key '%s' must be numeric", key);
+        return ESP_ERR_INVALID_ARG;
+    }
+    double value = item->valuedouble;
+    double as_int = (double)item->valueint;
+    if (fabs(value - as_int) > 1e-6) {
+        ESP_LOGW(TAG, "JSON key '%s' must be an integer", key);
+        return ESP_ERR_INVALID_ARG;
+    }
+    int ival = item->valueint;
+    if (ival < min || ival > max) {
+        ESP_LOGW(TAG, "JSON key '%s'=%d out of range [%d, %d]", key, ival, min, max);
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out = ival;
+    return ESP_OK;
+}
+
+static esp_err_t json_get_double_optional(cJSON *parent, const char *key, double min, double max,
+                                          bool *present, double *out)
+{
+    if (present) {
+        *present = false;
+    }
+    if (!parent) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(parent, key);
+    if (!item) {
+        return ESP_OK;
+    }
+    if (present) {
+        *present = true;
+    }
+    if (!cJSON_IsNumber(item)) {
+        ESP_LOGW(TAG, "JSON key '%s' must be numeric", key);
+        return ESP_ERR_INVALID_ARG;
+    }
+    double value = item->valuedouble;
+    if (value < min || value > max) {
+        ESP_LOGW(TAG, "JSON key '%s'=%f out of range [%f, %f]", key, value, min, max);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (out) {
+        *out = value;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t json_get_bool(cJSON *parent, const char *key, bool *out)
+{
+    if (!parent || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(parent, key);
+    if (!item) {
+        ESP_LOGW(TAG, "JSON key '%s' missing", key);
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (!cJSON_IsBool(item)) {
+        ESP_LOGW(TAG, "JSON key '%s' must be boolean", key);
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out = cJSON_IsTrue(item);
+    return ESP_OK;
+}
+
+static esp_err_t httpd_read_body(httpd_req_t *req, char *buf, size_t buf_sz, int *out_len)
+{
+    if (!req || !buf || buf_sz == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    size_t content_len = req->content_len;
+    if (content_len == 0) {
+        ESP_LOGW(TAG, "Empty payload on %s", req->uri);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (content_len >= buf_sz) {
+        ESP_LOGW(TAG, "Payload too large on %s: %zu bytes (max %zu)", req->uri, content_len, buf_sz - 1);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    int total = 0;
+    while ((size_t)total < content_len) {
+        int ret = httpd_req_recv(req, buf + total, buf_sz - 1 - total);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            ESP_LOGW(TAG, "httpd_req_recv failed on %s: %d", req->uri, ret);
+            return ESP_FAIL;
+        }
+        total += ret;
+    }
+    buf[total] = '\0';
+    if ((size_t)total != content_len) {
+        ESP_LOGW(TAG, "Payload truncated on %s: expected %zu got %d", req->uri, content_len, total);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (out_len) {
+        *out_len = total;
+    }
+    return ESP_OK;
+}
+
+#define PERMILLE_MIN 0
+#define PERMILLE_MAX 10000
+#define UVB_PERIOD_MIN 1
+#define UVB_PERIOD_MAX 255
+#define SKY_MIN 0
+#define SKY_MAX 2
+#define CALIB_DUTY_MIN 1.0
+#define CALIB_DUTY_MAX 10000.0
+#define CALIB_UVI_MIN 0.001
+#define CALIB_UVI_MAX 100.0
 
 static void send_json_error(httpd_req_t *req, const char *status, const char *message)
 {
@@ -108,26 +253,97 @@ static esp_err_t api_get_handler(httpd_req_t *req){
 }
 
 static esp_err_t api_post_handler(httpd_req_t *req){
-    char buf[512]; int rlen = httpd_req_recv(req, buf, sizeof(buf)-1);
-    if (rlen <= 0) return ESP_FAIL; buf[rlen]=0;
-    cJSON *j = cJSON_Parse(buf); if(!j) return ESP_FAIL;
+    char buf[512];
+    esp_err_t err = httpd_read_body(req, buf, sizeof(buf), NULL);
+    if (err != ESP_OK){
+        const char *msg = (err == ESP_ERR_INVALID_SIZE) ? "invalid payload size" : "failed to read request body";
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, msg);
+        return ESP_OK;
+    }
 
-    cJSON *cct = cJSON_GetObjectItem(j,"cct");
-    cJSON *uva = cJSON_GetObjectItem(j,"uva");
-    cJSON *uvb = cJSON_GetObjectItem(j,"uvb");
-    cJSON *sky = cJSON_GetObjectItem(j,"sky");
+    cJSON *j = cJSON_Parse(buf);
+    if (!j){
+        ESP_LOGW(TAG, "Invalid JSON payload on %s", req->uri);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json payload");
+        return ESP_OK;
+    }
+
+    cJSON *cct = NULL;
+    cJSON *uva = NULL;
+    cJSON *uvb = NULL;
+    err = json_get_object(j, "cct", &cct);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing object cct");
+        goto cleanup;
+    }
+    err = json_get_object(j, "uva", &uva);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing object uva");
+        goto cleanup;
+    }
+    err = json_get_object(j, "uvb", &uvb);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing object uvb");
+        goto cleanup;
+    }
+
+    int day = 0;
+    err = json_get_int(cct, "day", PERMILLE_MIN, PERMILLE_MAX, &day);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field cct.day");
+        goto cleanup;
+    }
+
+    int warm = 0;
+    err = json_get_int(cct, "warm", PERMILLE_MIN, PERMILLE_MAX, &warm);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field cct.warm");
+        goto cleanup;
+    }
+
+    int uva_set = 0;
+    err = json_get_int(uva, "set", PERMILLE_MIN, PERMILLE_MAX, &uva_set);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field uva.set");
+        goto cleanup;
+    }
+
+    int uvb_set = 0;
+    err = json_get_int(uvb, "set", PERMILLE_MIN, PERMILLE_MAX, &uvb_set);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field uvb.set");
+        goto cleanup;
+    }
+
+    int uvb_per = 0;
+    err = json_get_int(uvb, "period_s", UVB_PERIOD_MIN, UVB_PERIOD_MAX, &uvb_per);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field uvb.period_s");
+        goto cleanup;
+    }
+
+    int uvb_duty = 0;
+    err = json_get_int(uvb, "duty_pm", PERMILLE_MIN, PERMILLE_MAX, &uvb_duty);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field uvb.duty_pm");
+        goto cleanup;
+    }
+
+    int sky_val = 0;
+    err = json_get_int(j, "sky", SKY_MIN, SKY_MAX, &sky_val);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field sky");
+        goto cleanup;
+    }
 
 #if TCA_PRESENT
     tca9548a_select(I2C_NUM_0, TCA_ADDR, TCA_CH_DOME0);
 #endif
     // Write CCT1/2
-    int day = cJSON_GetObjectItem(cct,"day")->valueint;
-    int warm= cJSON_GetObjectItem(cct,"warm")->valueint;
     uint8_t p[4] = { day & 0xFF, (day>>8)&0xFF, warm & 0xFF, (warm>>8)&0xFF };
     dome_bus_write( 0x02, p, 4);
 
     // UVA set (permille)
-    int uva_set = cJSON_GetObjectItem(uva,"set")->valueint;
     uint8_t uva_b = (uint8_t)(uva_set/100);
     dome_bus_write( 0x06, &uva_b, 1);
 
@@ -139,25 +355,26 @@ static esp_err_t api_post_handler(httpd_req_t *req){
         k = 0;
         uvi_max = 0;
     }
-    int uvb_set = cJSON_GetObjectItem(uvb,"set")->valueint; // permille
     float allowed_duty_pm = (uvi_max>0 && k>0) ? (uvi_max / k) : uvb_set;
     if (uvb_set > (int)allowed_duty_pm) uvb_set = (int)allowed_duty_pm;
     uint8_t uvb_b = (uint8_t)(uvb_set/100);
     dome_bus_write( 0x07, &uvb_b, 1);
     // period + duty
-    int uvb_per = cJSON_GetObjectItem(uvb,"period_s")->valueint;
-    int uvb_duty= cJSON_GetObjectItem(uvb,"duty_pm")->valueint;
     uint8_t per_b = (uint8_t)uvb_per, duty_b = (uint8_t)uvb_duty;
     dome_bus_write( 0x0B, &per_b, 1);
     dome_bus_write( 0x0C, &duty_b, 1);
 
     // Sky
-    uint8_t sky_b = (uint8_t)sky->valueint;
+    uint8_t sky_b = (uint8_t)sky_val;
     dome_bus_write( 0x08, &sky_b, 1);
 
     cJSON_Delete(j);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+
+cleanup:
+    cJSON_Delete(j);
     return ESP_OK;
 }
 
@@ -220,52 +437,79 @@ static esp_err_t calib_get_handler(httpd_req_t *req){
 }
 
 static esp_err_t calib_post_handler(httpd_req_t *req){
-    char buf[256]; int r=httpd_req_recv(req, buf, sizeof(buf)-1); if(r<=0) return ESP_FAIL; buf[r]=0;
-    cJSON* j=cJSON_Parse(buf);
-    if(!j){
-        send_json_error(req, "400 Bad Request", "invalid json");
+    char buf[256];
+    esp_err_t err = httpd_read_body(req, buf, sizeof(buf), NULL);
+    if (err != ESP_OK){
+        const char *msg = (err == ESP_ERR_INVALID_SIZE) ? "invalid payload size" : "failed to read request body";
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, msg);
         return ESP_OK;
     }
 
-    cJSON* duty_node = cJSON_GetObjectItem(j,"duty_pm");
-    cJSON* uvi_node = cJSON_GetObjectItem(j,"uvi");
-    cJSON* uvi_max_node = cJSON_GetObjectItem(j,"uvi_max");
-
-    bool duty_valid = duty_node && cJSON_IsNumber(duty_node);
-    bool uvi_valid = uvi_node && cJSON_IsNumber(uvi_node);
-    bool uvi_max_valid = uvi_max_node && cJSON_IsNumber(uvi_max_node);
-
-    if ((!duty_valid || !uvi_valid) && !uvi_max_valid){
-        cJSON_Delete(j);
-        send_json_error(req, "400 Bad Request", "missing calibration values");
+    cJSON *j = cJSON_Parse(buf);
+    if (!j){
+        ESP_LOGW(TAG, "Invalid JSON payload on %s", req->uri);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json payload");
         return ESP_OK;
     }
 
-    esp_err_t err = ESP_OK;
+    bool has_duty = false;
+    bool has_uvi = false;
+    bool has_uvi_max = false;
+    double duty_pm = 0.0;
+    double uvi = 0.0;
+    double uvi_max = 0.0;
 
-    if (uvi_max_valid && uvi_max_node->valuedouble > 0){
-        err = calib_set_uvb_uvi_max((float)uvi_max_node->valuedouble);
-        if (err != ESP_OK){
-            ESP_LOGE(TAG, "calib_set_uvb_uvi_max failed: %s", esp_err_to_name(err));
+    err = json_get_double_optional(j, "duty_pm", CALIB_DUTY_MIN, CALIB_DUTY_MAX, &has_duty, &duty_pm);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field duty_pm");
+        goto cleanup;
+    }
+    err = json_get_double_optional(j, "uvi", CALIB_UVI_MIN, CALIB_UVI_MAX, &has_uvi, &uvi);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field uvi");
+        goto cleanup;
+    }
+    err = json_get_double_optional(j, "uvi_max", CALIB_UVI_MIN, CALIB_UVI_MAX, &has_uvi_max, &uvi_max);
+    if (err != ESP_OK){
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field uvi_max");
+        goto cleanup;
+    }
+
+    if ((has_duty && !has_uvi) || (!has_duty && has_uvi) || (!has_duty && !has_uvi_max)){
+        ESP_LOGW(TAG, "Calibration payload rejected (duty=%d, uvi=%d, uvi_max=%d)", has_duty, has_uvi, has_uvi_max);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid calibration payload");
+        goto cleanup;
+    }
+
+    esp_err_t op_err = ESP_OK;
+
+    if (has_uvi_max){
+        op_err = calib_set_uvb_uvi_max((float)uvi_max);
+        if (op_err != ESP_OK){
+            ESP_LOGE(TAG, "calib_set_uvb_uvi_max failed: %s", esp_err_to_name(op_err));
         }
     }
 
-    if (err == ESP_OK && duty_valid && uvi_valid && duty_node->valuedouble > 0 && uvi_node->valuedouble > 0){
-        err = calib_set_uvb((float)duty_node->valuedouble, (float)uvi_node->valuedouble);
-        if (err != ESP_OK){
-            ESP_LOGE(TAG, "calib_set_uvb failed: %s", esp_err_to_name(err));
+    if (op_err == ESP_OK && has_duty){
+        op_err = calib_set_uvb((float)duty_pm, (float)uvi);
+        if (op_err != ESP_OK){
+            ESP_LOGE(TAG, "calib_set_uvb failed: %s", esp_err_to_name(op_err));
         }
     }
 
     cJSON_Delete(j);
 
-    if (err != ESP_OK){
-        send_json_error(req, "500 Internal Server Error", esp_err_to_name(err));
+    if (op_err != ESP_OK){
+        send_json_error(req, "500 Internal Server Error", esp_err_to_name(op_err));
         return ESP_OK;
     }
 
     httpd_resp_set_type(req,"application/json");
     httpd_resp_sendstr(req,"{\"ok\":true}");
+    return ESP_OK;
+
+cleanup:
+    cJSON_Delete(j);
     return ESP_OK;
 }
 
@@ -277,27 +521,38 @@ static esp_err_t alarms_mute_get(httpd_req_t *req){
     return ESP_OK;
 }
 static esp_err_t alarms_mute_post(httpd_req_t *req){
-    char buf[128]; int r=httpd_req_recv(req, buf, sizeof(buf)-1); if(r<=0) return ESP_FAIL; buf[r]=0;
-    cJSON* j=cJSON_Parse(buf); if(!j) return ESP_FAIL;
-    cJSON* jm=cJSON_GetObjectItem(j,"muted");
-    if (!jm || !cJSON_IsBool(jm)){
-        cJSON_Delete(j);
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_set_type(req,"application/json");
-        httpd_resp_sendstr(req,"{\"ok\":false,\"error\":\"invalid muted flag\"}");
+    char buf[128];
+    esp_err_t err = httpd_read_body(req, buf, sizeof(buf), NULL);
+    if (err != ESP_OK){
+        const char *msg = (err == ESP_ERR_INVALID_SIZE) ? "invalid payload size" : "failed to read request body";
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, msg);
         return ESP_OK;
     }
 
-    bool muted = cJSON_IsTrue(jm);
-    esp_err_t err = alarms_set_mute(muted);
+    cJSON *j = cJSON_Parse(buf);
+    if (!j){
+        ESP_LOGW(TAG, "Invalid JSON payload on %s", req->uri);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json payload");
+        return ESP_OK;
+    }
+
+    bool muted = false;
+    err = json_get_bool(j, "muted", &muted);
+    if (err != ESP_OK){
+        cJSON_Delete(j);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid field muted");
+        return ESP_OK;
+    }
+
+    esp_err_t op_err = alarms_set_mute(muted);
     cJSON_Delete(j);
 
     httpd_resp_set_type(req,"application/json");
-    if (err == ESP_OK){
+    if (op_err == ESP_OK){
         httpd_resp_sendstr(req,"{\"ok\":true}");
     } else {
         char resp[128];
-        snprintf(resp, sizeof(resp), "{\"ok\":false,\"error\":\"%s\"}", esp_err_to_name(err));
+        snprintf(resp, sizeof(resp), "{\"ok\":false,\"error\":\"%s\"}", esp_err_to_name(op_err));
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_sendstr(req, resp);
     }
