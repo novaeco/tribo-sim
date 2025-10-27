@@ -20,8 +20,13 @@
 #define DOME_FAN_PWM  4
 #define DOME_FAN_TACH 5
 
-// NTC ADC channel (example)
-#define DOME_NTC_ADC_CH  ADC_CHANNEL_2 /* GPIO2 on ADC1 (example) */
+// NTC thermistor sensing
+#define DOME_NTC_ADC_CH          ADC_CHANNEL_2 /* GPIO2 on ADC1 (example) */
+#define DOME_NTC_PULLUP_OHMS     10000.0f      /* Series pull-up resistor */
+#define DOME_NTC_R25_OHMS        10000.0f      /* NTC resistance @ 25 °C */
+#define DOME_NTC_BETA_K          3950.0f       /* Beta coefficient (Kelvin) */
+#define DOME_NTC_SUPPLY_MV       3300.0f       /* Measured rail feeding the divider */
+#define DOME_NTC_OVERSAMPLE      8             /* Number of ADC samples to average */
 
 // Interlock capot (GPIO input, active-low, pull-up). Choose a safe pin.
 #define DOME_INTERLOCK_GPIO 17
