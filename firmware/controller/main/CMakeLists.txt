@@ -18,5 +18,5 @@ idf_component_register(
          "net/wifi.c"
          "net/httpd.c"
     INCLUDE_DIRS "include" "drivers" "net"
-    REQUIRES driver esp_wifi esp_http_server nvs_flash esp_timer esp_adc tinyusb json
+    REQUIRES driver esp_wifi esp_http_server nvs_flash esp_timer esp_adc tinyusb cjson
 )
