@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"   // + ajout pour ledc_*
 
 #include "include/config.h"
 #include "drivers/i2c_bus.h"
@@ -16,8 +17,38 @@
 #include "net/wifi.h"
 #include "net/httpd.h"
 #include "drivers/alarms.h"
+#include "drivers/dome_bus.h"
 
 static const char *TAG = "CTRL_APP";
+
+// --- tâche C (remplace la lambda C++) ---
+static void btn_rearm_task(void *arg){
+    gpio_reset_pin(BTN_USER_GPIO);
+    gpio_set_direction(BTN_USER_GPIO, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(BTN_USER_GPIO, GPIO_PULLUP_ONLY);
+    const int LONG_MS = 2000;
+    int count = 0;
+    for(;;){
+        int lvl = gpio_get_level(BTN_USER_GPIO); // 1=idle (pull-up), 0=pressed
+        if (lvl == 0){ count += 10; } else { if (count>0) count -= 10; if (count<0) count=0; }
+        if (count >= LONG_MS){
+            // Rearm: clear degraded + unmute
+            dome_bus_clear_degraded();
+            alarms_set_mute(false);
+            // Feedback: quick 3 beeps
+            for (int i=0;i<3;i++){
+                ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 512);
+                ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
+                vTaskDelay(pdMS_TO_TICKS(120));
+                ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 0);
+                ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
+                vTaskDelay(pdMS_TO_TICKS(120));
+            }
+            count = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
 
 void app_main(void)
 {
@@ -56,12 +87,15 @@ void app_main(void)
     ssr_init();
     fans_init();
 
-    // Bring Wi‑Fi + HTTP up (stubs)
+    // Bring Wi-Fi + HTTP up (stubs)
     wifi_start_apsta("terrarium-s3", "terrarium123");
     httpd_start_basic();
 
     // Start alarms task (buzzer patterns)
     alarms_start();
+
+    // Button long-press task (rearm: clear BUS_LOSS degraded + unmute)
+    xTaskCreatePinnedToCore(btn_rearm_task, "btn_rearm", 3072, NULL, 3, NULL, 1);
 
     // Probe Dome via I2C, read STATUS
     uint8_t status = 0xFF;
