@@ -6,5 +6,5 @@ idf_component_register(
          "drivers/fan_pwm.c"
          "drivers/ntc_adc.c"
     INCLUDE_DIRS "include" "drivers"
-    REQUIRES driver esp_timer nvs_flash esp_adc
+    REQUIRES driver nvs_flash esp_timer esp_adc
 )
