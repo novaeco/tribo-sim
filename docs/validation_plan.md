@@ -30,3 +30,10 @@
 - `/api/status` complet (T/RH/Pression + T dissipateur dôme).
 - Limitation UVB par **UVI** respectée à ±10 % (radiomètre).
 
+## 7) Régulation climatique
+- Valider la planification jour/nuit (`/api/climate`) : forcer `day_start_min=480`, `night_start_min=1200`, vérifier via logs FreeRTOS que le flag `state.is_day` bascule à l'heure RTC +/−1 min.
+- Contrôle température : chambre climatique à 25 °C → mesurer activation SSR0 quand Tmes < consigne − hyst/2, extinction > consigne + hyst/2 (oscilloscope sur relais statique). Documenter temps de réponse < 60 s.
+- Contrôle hygrométrie : générer humidité > consigne + hyst → PWM ventilateurs ≥ 60 % (mesure sur FAN1 PWM), relâcher < consigne − hyst → PWM ≤ 20 %.
+- Clamp UVB : configurer `day.uvi_max = 2.5`, calibration `uvi_max = 2.0` → vérifier commande UVB transmise (registre 0x07) équivalente à `min(schedule, calib)` (mesure duty permille) et que le POST `/api/climate` rejette valeurs hors bornes.
+- Endurance 24 h : monitorer dérive stockée (`measurement.temp_drift_c`, `humidity_drift_pct`) via `/api/climate` toutes les 10 min, drift absolu < 1.5 °C / 8 %RH.
+

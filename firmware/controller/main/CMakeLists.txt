@@ -13,6 +13,7 @@ idf_component_register(
          "drivers/sht21.c"
          "drivers/bme280.c"
          "drivers/sensors.c"
+         "drivers/climate.c"
          "drivers/calib.c"
          "drivers/alarms.c"
          "net/wifi.c"
