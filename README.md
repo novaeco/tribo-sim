@@ -246,7 +246,7 @@ Retourne un JSON agrégé **capteurs + dôme** :
 
 - **v0.3.3** : Mute alarmes (NVS), API `/api/alarms/mute`, **long‑press** bouton → clear BUS_LOSS + unmute.  
 - **v0.3.2** : Buzzer patterns, watchdog BUS_LOSS refactor, capteurs explicités.  
-- **v0.3.1** : SHT21/HTU21, `/api/status` enrichi, wrappers I²C avec mode dégradé.  
+- **v0.3.1** : SHT21/SHT21, `/api/status` enrichi, wrappers I²C avec mode dégradé.  
 - **v0.3.0** : Interlock capot < 100 ms, `/api/status`, calibration UVI (NVS), TCA routing, sécurité dôme.  
 - **v0.2** : API `/api/light/dome0`, UI sliders, UVB pulsé, WS2812 RMT, capteurs basiques.  
 - **v0.1** : Squelettes PlatformIO/ESP‑IDF (contrôleur + dôme), I²C maître/esclave, HTTP minimal.
