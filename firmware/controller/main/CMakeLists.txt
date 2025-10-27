@@ -1,0 +1,22 @@
+idf_component_register(
+    SRCS "app_main.c"
+         "drivers/i2c_bus.c"
+         "drivers/tca9548a.c"
+         "drivers/pcf8574.c"
+         "drivers/ds3231.c"
+         "drivers/ssr.c"
+         "drivers/fans.c"
+         "drivers/dome_i2c.c"
+         "drivers/dome_bus.c"
+         "drivers/onewire.c"
+         "drivers/sht31.c"
+         "drivers/sht21.c"
+         "drivers/bme280.c"
+         "drivers/sensors.c"
+         "drivers/calib.c"
+         "drivers/alarms.c"
+         "net/wifi.c"
+         "net/httpd.c"
+    INCLUDE_DIRS "include" "drivers" "net"
+    REQUIRES driver esp_wifi esp_http_server nvs_flash esp_timer esp_adc tinyusb json
+)
