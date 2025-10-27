@@ -101,9 +101,15 @@ static esp_err_t api_get_handler(httpd_req_t *req){
 }
 
 static esp_err_t api_post_handler(httpd_req_t *req){
-    char buf[512]; int rlen = httpd_req_recv(req, buf, sizeof(buf)-1);
-    if (rlen <= 0) return ESP_FAIL; buf[rlen]=0;
-    cJSON *j = cJSON_Parse(buf); if(!j) return ESP_FAIL;
+    char buf[512];
+    int rlen = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (rlen <= 0) {
+        return ESP_FAIL;
+    }
+    buf[rlen] = 0;
+
+    cJSON *j = cJSON_Parse(buf);
+    if(!j) return ESP_FAIL;
 
     cJSON *cct = cJSON_GetObjectItem(j,"cct");
     cJSON *uva = cJSON_GetObjectItem(j,"uva");
@@ -203,8 +209,15 @@ static esp_err_t calib_get_handler(httpd_req_t *req){
 }
 
 static esp_err_t calib_post_handler(httpd_req_t *req){
-    char buf[256]; int r=httpd_req_recv(req, buf, sizeof(buf)-1); if(r<=0) return ESP_FAIL; buf[r]=0;
-    cJSON* j=cJSON_Parse(buf); if(!j) return ESP_FAIL;
+    char buf[256];
+    int r = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (r <= 0) {
+        return ESP_FAIL;
+    }
+    buf[r] = 0;
+
+    cJSON* j=cJSON_Parse(buf);
+    if(!j) return ESP_FAIL;
     float duty_pm = cJSON_GetObjectItem(j,"duty_pm")->valuedouble;
     float uvi     = cJSON_GetObjectItem(j,"uvi")->valuedouble;
     float uvi_max = cJSON_GetObjectItem(j,"uvi_max")->valuedouble;
@@ -226,8 +239,15 @@ static esp_err_t alarms_mute_get(httpd_req_t *req){
 }
 
 static esp_err_t alarms_mute_post(httpd_req_t *req){
-    char buf[128]; int r=httpd_req_recv(req, buf, sizeof(buf)-1); if(r<=0) return ESP_FAIL; buf[r]=0;
-    cJSON* j=cJSON_Parse(buf); if(!j) return ESP_FAIL;
+    char buf[128];
+    int r = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (r <= 0) {
+        return ESP_FAIL;
+    }
+    buf[r] = 0;
+
+    cJSON* j=cJSON_Parse(buf);
+    if(!j) return ESP_FAIL;
     cJSON* jm=cJSON_GetObjectItem(j,"muted");
     if (jm && cJSON_IsBool(jm)){ alarms_set_mute(cJSON_IsTrue(jm)); }
     cJSON_Delete(j);
