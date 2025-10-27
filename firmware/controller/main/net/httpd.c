@@ -1,6 +1,7 @@
 #include "httpd.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_err.h"
 #include "cJSON.h"
 #include "drivers/dome_i2c.h"
 #include "drivers/dome_bus.h"
@@ -223,10 +224,27 @@ static esp_err_t alarms_mute_post(httpd_req_t *req){
     char buf[128]; int r=httpd_req_recv(req, buf, sizeof(buf)-1); if(r<=0) return ESP_FAIL; buf[r]=0;
     cJSON* j=cJSON_Parse(buf); if(!j) return ESP_FAIL;
     cJSON* jm=cJSON_GetObjectItem(j,"muted");
-    if (jm && cJSON_IsBool(jm)){ alarms_set_mute(cJSON_IsTrue(jm)); }
+    if (!jm || !cJSON_IsBool(jm)){
+        cJSON_Delete(j);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req,"application/json");
+        httpd_resp_sendstr(req,"{\"ok\":false,\"error\":\"invalid muted flag\"}");
+        return ESP_OK;
+    }
+
+    bool muted = cJSON_IsTrue(jm);
+    esp_err_t err = alarms_set_mute(muted);
     cJSON_Delete(j);
+
     httpd_resp_set_type(req,"application/json");
-    httpd_resp_sendstr(req,"{\"ok\":true}");
+    if (err == ESP_OK){
+        httpd_resp_sendstr(req,"{\"ok\":true}");
+    } else {
+        char resp[128];
+        snprintf(resp, sizeof(resp), "{\"ok\":false,\"error\":\"%s\"}", esp_err_to_name(err));
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, resp);
+    }
     return ESP_OK;
 }
 

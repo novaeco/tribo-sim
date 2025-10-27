@@ -2,6 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_err.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"   // + ajout pour ledc_*
@@ -34,15 +35,19 @@ static void btn_rearm_task(void *arg){
         if (count >= LONG_MS){
             // Rearm: clear degraded + unmute
             dome_bus_clear_degraded();
-            alarms_set_mute(false);
-            // Feedback: quick 3 beeps
-            for (int i=0;i<3;i++){
-                ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 512);
-                ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
-                vTaskDelay(pdMS_TO_TICKS(120));
-                ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 0);
-                ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
-                vTaskDelay(pdMS_TO_TICKS(120));
+            esp_err_t mute_err = alarms_set_mute(false);
+            if (mute_err == ESP_OK){
+                // Feedback: quick 3 beeps
+                for (int i=0;i<3;i++){
+                    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 512);
+                    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
+                    vTaskDelay(pdMS_TO_TICKS(120));
+                    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 0);
+                    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
+                    vTaskDelay(pdMS_TO_TICKS(120));
+                }
+            } else {
+                ESP_LOGE(TAG, "Failed to clear alarm mute: %s", esp_err_to_name(mute_err));
             }
             count = 0;
         }
@@ -61,6 +66,9 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
     ESP_LOGI(TAG, "NVS initialized");
+
+    ESP_ERROR_CHECK(alarms_init());
+    ESP_LOGI(TAG, "Alarms restored");
 
     // Basic GPIOs
     gpio_reset_pin(LED_STATUS_GPIO);
