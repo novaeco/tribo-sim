@@ -6,29 +6,12 @@
 #include "drivers/dome_bus.h"
 #include "drivers/sensors.h"
 #include "drivers/calib.h"
+#include "drivers/alarms.h"
+#include "drivers/tca9548a.h"   // + si TCA_PRESENT
 #include "include/config.h"
+#include <stdio.h>              // + pour snprintf
 
-static esp_err_t dome_bus_read(uint8_t reg, uint8_t* b, size_t n){
-#if TCA_PRESENT
-    tca9548a_select(I2C_NUM_0, TCA_ADDR, TCA_CH_DOME0);
-#endif
-    esp_err_t r = dome_bus_read( reg, b, n);
-    if (r==ESP_OK){ dome_i2c_errs = 0; }
-    else { if (++dome_i2c_errs > 5) dome_bus_is_degraded() = true; }
-    return r;
-}
-static esp_err_t dome_bus_write(uint8_t reg, const uint8_t* b, size_t n){
-    if (dome_bus_is_degraded()) return ESP_FAIL; // do not push writes when degraded
-#if TCA_PRESENT
-    tca9548a_select(I2C_NUM_0, TCA_ADDR, TCA_CH_DOME0);
-#endif
-    esp_err_t r = dome_bus_write( reg, b, n);
-    if (r==ESP_OK){ dome_i2c_errs = 0; }
-    else { if (++dome_i2c_errs > 5) dome_bus_is_degraded() = true; }
-    return r;
-}
 static const char* TAG="HTTPD";
-
 
 static esp_err_t root_get_handler(httpd_req_t *req){
     const char* html =
@@ -158,7 +141,7 @@ static esp_err_t api_post_handler(httpd_req_t *req){
 
     cJSON_Delete(j);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{"ok":true}");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
 }
 
@@ -225,7 +208,25 @@ static esp_err_t calib_post_handler(httpd_req_t *req){
     if (duty_pm>0 && uvi>0) calib_set_uvb(duty_pm, uvi);
     cJSON_Delete(j);
     httpd_resp_set_type(req,"application/json");
-    httpd_resp_sendstr(req,"{"ok":true}");
+    httpd_resp_sendstr(req,"{\"ok\":true}");
+    return ESP_OK;
+}
+
+static esp_err_t alarms_mute_get(httpd_req_t *req){
+    bool m = alarms_get_mute();
+    char buf[64]; snprintf(buf,sizeof(buf),"{\"muted\":%s}", m?"true":"false");
+    httpd_resp_set_type(req,"application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+static esp_err_t alarms_mute_post(httpd_req_t *req){
+    char buf[128]; int r=httpd_req_recv(req, buf, sizeof(buf)-1); if(r<=0) return ESP_FAIL; buf[r]=0;
+    cJSON* j=cJSON_Parse(buf); if(!j) return ESP_FAIL;
+    cJSON* jm=cJSON_GetObjectItem(j,"muted");
+    if (jm && cJSON_IsBool(jm)){ alarms_set_mute(cJSON_IsTrue(jm)); }
+    cJSON_Delete(j);
+    httpd_resp_set_type(req,"application/json");
+    httpd_resp_sendstr(req,"{\"ok\":true}");
     return ESP_OK;
 }
 
@@ -247,6 +248,10 @@ void httpd_start_basic(void){
         httpd_register_uri_handler(server, &st);
         httpd_register_uri_handler(server, &cg);
         httpd_register_uri_handler(server, &cp);
+        httpd_uri_t amg = {.uri="/api/alarms/mute", .method=HTTP_GET, .handler=alarms_mute_get, .user_ctx=NULL};
+        httpd_uri_t amp = {.uri="/api/alarms/mute", .method=HTTP_POST, .handler=alarms_mute_post, .user_ctx=NULL};
+        httpd_register_uri_handler(server, &amg);
+        httpd_register_uri_handler(server, &amp);
         ESP_LOGI(TAG, "HTTP server started");
     }
 }
