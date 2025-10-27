@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS "app_main.c"
+         "climate.c"
          "drivers/i2c_bus.c"
          "drivers/tca9548a.c"
          "drivers/pcf8574.c"
