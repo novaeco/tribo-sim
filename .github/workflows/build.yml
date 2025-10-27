@@ -37,10 +37,12 @@ jobs:
           pio system info
 
       - name: Build controller
+        if: hashFiles('firmware/controller/platformio.ini') != ''
         working-directory: firmware/controller
         run: pio run -e s3-wroom2-idf
 
       - name: Build dome
+        if: hashFiles('firmware/dome/platformio.ini') != ''
         working-directory: firmware/dome
         run: pio run -e s3-wroom2-idf
 
