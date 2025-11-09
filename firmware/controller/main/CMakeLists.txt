@@ -18,6 +18,8 @@ idf_component_register(
          "drivers/alarms.c"
          "net/wifi.c"
          "net/httpd.c"
+         "net/ota_stream.c"
+         "species_profiles.c"
     INCLUDE_DIRS "include" "drivers" "net"
     REQUIRES driver esp_wifi esp_http_server nvs_flash esp_timer esp_adc json
 )

@@ -1,5 +1,6 @@
 #include "alarms.h"
 #include "include/config.h"
+#include "include/dome_regs.h"
 #include "drivers/dome_bus.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -128,7 +129,7 @@ static void alarms_task(void* arg){
     while (1){
         // Read dome status
         uint8_t st=0;
-        dome_bus_read(0x00, &st, 1);
+        dome_bus_read(DOME_REG_STATUS, &st, 1);
         bool degraded = dome_bus_is_degraded();
         bool interlock = (st & (1<<5))!=0;
         bool ot_soft   = (st & (1<<0))!=0;

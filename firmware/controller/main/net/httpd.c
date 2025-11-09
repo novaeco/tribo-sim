@@ -1,283 +1,622 @@
 #include "httpd.h"
-#include "esp_http_server.h"
-#include "esp_log.h"
-#include "cJSON.h"
-#include <stdio.h>
 
-#include "drivers/dome_i2c.h"
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+#include "esp_https_server.h"
+#include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "esp_app_desc.h"
+#include "esp_timer.h"
+#include "esp_check.h"
+#include "esp_err.h"
+#include "cJSON.h"
+
 #include "drivers/dome_bus.h"
+#include "drivers/dome_i2c.h"
 #include "drivers/sensors.h"
 #include "drivers/calib.h"
 #include "drivers/alarms.h"
 #include "drivers/tca9548a.h"
+#include "drivers/climate.h"
 #include "include/config.h"
+#include "include/dome_regs.h"
+#include "net/certs.h"
+#include "species_profiles.h"
+#include "ota_stream.h"
 
-static const char* TAG="HTTPD";
+static const char *TAG = "HTTPSD";
 
-static esp_err_t root_get_handler(httpd_req_t *req){
-    const char* html =
-    "<!doctype html><html><head><meta charset='utf-8'><title>Terrarium S3</title>"
-    "<style>body{font-family:system-ui;margin:24px;max-width:900px}"
-    "label{display:block;margin-top:10px}input[type=range]{width:100%}"
-    ".row{display:grid;grid-template-columns:220px 1fr;gap:12px;align-items:center}"
-    "button{padding:8px 12px;margin-top:12px}</style></head><body>"
-    "<h1>Terrarium S3 — Dôme</h1>"
-    "<div id='status'></div>"
-    "<div class='row'><label>Day (‰)</label><input id='day' type='range' min='0' max='10000'></div>"
-    "<div class='row'><label>Warm (‰)</label><input id='warm' type='range' min='0' max='10000'></div>"
-    "<div class='row'><label>UVA (‰)</label><input id='uva' type='range' min='0' max='10000'></div>"
-    "<div class='row'><label>UVB (‰) — UVI limited</label><input id='uvb' type='range' min='0' max='10000'></div>"
-    "<div class='row'><label>UVB period (s)</label><input id='uvb_per' type='number' min='5' max='600' value='60'></div>"
-    "<div class='row'><label>UVB duty (‰)</label><input id='uvb_duty' type='number' min='0' max='10000' value='1000'></div>"
-    "<div class='row'><label>Sky</label><select id='sky'><option value='0'>Off</option><option value='1'>Blue</option><option value='2'>Twinkle</option></select></div>"
-    "<button onclick='save()'>Apply</button>"
-    "<h2 style=margin-top:32px>Capteurs</h2><pre id='capteurs'></pre>"
-    "<h2>Calibration UVB</h2>"
-    "<div class='row'><label>UVI max (target)</label><input id='uvi_max' type='number' step='0.1' value='1.0'></div>"
-    "<div class='row'><label>Dernier k</label><span id='kval'></span></div>"
-    "<div class='row'><label>Mesure UVI @ duty (‰)</label><input id='cal_duty' type='number' min='0' max='10000' value='1000'></div>"
-    "<div class='row'><label>UVI mesuré</label><input id='cal_uvi' type='number' step='0.01' value='0.1'></div>"
-    "<button onclick='calib()'>Enregistrer calibration</button>"
-    "<script>"
-    "async function refresh(){"
-    "  let r=await fetch('/api/light/dome0'); let j=await r.json();"
-    "  day.value=j.cct.day; warm.value=j.cct.warm; uva.value=j.uva.set; uvb.value=j.uvb.set;"
-    "  uvb_per.value=j.uvb.period_s; uvb_duty.value=j.uvb.duty_pm; sky.value=j.sky;"
-    "  status.innerText='STATUS 0x'+j.status.toString(16);"
-    "  let s=await (await fetch('/api/status')).json();"
-    "  capteurs.textContent=JSON.stringify(s,null,2);"
-    "  let kinfo=await (await fetch('/api/calibrate/uvb')).json();"
-    "  uvi_max.value=kinfo.uvi_max; kval.textContent=kinfo.k.toFixed(6)+' UVI/‰';"
-    "}"
-    "async function save(){"
-    " const p={cct:{day:+day.value,warm:+warm.value}, uva:{set:+uva.value},"
-    " uvb:{set:+uvb.value,period_s:+uvb_per.value,duty_pm:+uvb_duty.value}, sky:+sky.value};"
-    " await fetch('/api/light/dome0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});"
-    " refresh(); }"
-    "async function calib(){"
-    " const body={duty_pm:+cal_duty.value, uvi:+cal_uvi.value, uvi_max:+uvi_max.value};"
-    " await fetch('/api/calibrate/uvb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});"
-    " refresh(); }"
-    "refresh();"
-    "</script></body></html>";
-    httpd_resp_send(req, html, -1);
+static httpd_handle_t s_server = NULL;
+
+static const char ROOT_HTML[] =
+    "<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Terrarium S3</title>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<style>body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;padding:24px;background:#101420;color:#f1f5ff}"
+    "h1{margin-top:0;font-size:1.8rem}section{margin-bottom:32px;padding:16px;border-radius:16px;background:rgba(21,30,46,0.72);"
+    "backdrop-filter:blur(8px);box-shadow:0 12px 40px rgba(10,10,20,0.4)}label{display:block;margin-bottom:6px;font-size:0.9rem}"
+    "input,select,button{padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.08);"
+    "color:#fefefe;margin-bottom:12px;width:100%;box-sizing:border-box}button{cursor:pointer;font-weight:600;background:#3a86ff;}"
+    "button.secondary{background:#6c757d;}#chartContainer{position:relative;height:260px;margin-top:16px;border-radius:12px;overflow:hidden;"
+    "background:rgba(7,11,20,0.6);}canvas{width:100%;height:100%;}table{width:100%;border-collapse:collapse;}th,td{padding:6px 8px;"
+    "border-bottom:1px solid rgba(255,255,255,0.08);}#statusBanner{padding:12px;border-radius:12px;margin-bottom:16px;font-weight:600;}"
+    "#statusBanner.error{background:rgba(220,53,69,0.15);color:#ffb4c0;}#statusBanner.ok{background:rgba(40,167,69,0.18);color:#b7ffce;}"
+    "progress{width:100%;height:16px;border-radius:12px;overflow:hidden;background:rgba(255,255,255,0.1);}progress::-webkit-progress-bar{background:transparent;}"
+    "progress::-webkit-progress-value{background:#3a86ff;}details{margin-top:12px;}summary{cursor:pointer;font-weight:600;}""</style></head><body>"
+    "<h1>Terrarium S3</h1>"
+    "<div id='statusBanner' class='ok'></div>"
+    "<section><label for='languageSelect' data-i18n='language'></label><select id='languageSelect'><option value='fr'>Français</option><option value='en'>English</option><option value='es'>Español</option></select>"
+    "<label for='speciesSelect' data-i18n='species_profile'></label><select id='speciesSelect'></select><button id='applySpecies' data-i18n='apply_profile'></button>"
+    "<details><summary data-i18n='custom_profile'></summary><div><label data-i18n='profile_name'></label><input id='customName' placeholder='My species'>"
+    "<textarea id='customSchedule' rows='8' style='width:100%;border-radius:10px;padding:10px;background:rgba(255,255,255,0.08);color:#fefefe;' data-i18n-placeholder='custom_schedule_hint'></textarea>"
+    "<button id='saveCustom' data-i18n='save_custom'></button></div></details></section>"
+    "<section><h2 data-i18n='light_control'></h2><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;'>"
+    "<div><label data-i18n='cct_day'></label><input id='cctDay' type='number' min='0' max='10000'><label data-i18n='cct_warm'></label><input id='cctWarm' type='number' min='0' max='10000'></div>"
+    "<div><label data-i18n='uva_set'></label><input id='uvaSet' type='number' min='0' max='10000'><label data-i18n='uva_clamp'></label><input id='uvaClamp' type='number' min='0' max='10000'></div>"
+    "<div><label data-i18n='uvb_set'></label><input id='uvbSet' type='number' min='0' max='10000'><label data-i18n='uvb_clamp'></label><input id='uvbClamp' type='number' min='0' max='10000'></div>"
+    "<div><label data-i18n='uvb_period'></label><input id='uvbPeriod' type='number' min='1' max='255'><label data-i18n='uvb_duty'></label><input id='uvbDuty' type='number' min='0' max='10000'></div>"
+    "</div><label data-i18n='sky_mode'></label><select id='skyMode'><option value='0'>Off</option><option value='1'>Blue</option><option value='2'>Aurora</option></select>"
+    "<button id='applyLight' data-i18n='apply_light'></button></section>"
+    "<section><h2 data-i18n='telemetry'></h2><div id='chartContainer'><canvas id='telemetryChart'></canvas></div>"
+    "<table><thead><tr><th data-i18n='metric'></th><th data-i18n='value'></th></tr></thead><tbody id='telemetryTable'></tbody></table></section>"
+    "<section><h2 data-i18n='ota_updates'></h2><label data-i18n='controller_fw'></label><input id='controllerBin' type='file' accept='.bin'><progress id='controllerProgress' value='0' max='100'></progress><button id='flashController' data-i18n='flash_controller'></button>"
+    "<label data-i18n='dome_fw'></label><input id='domeBin' type='file' accept='.bin'><progress id='domeProgress' value='0' max='100'></progress><button id='flashDome' data-i18n='flash_dome'></button></section>"
+    "<section><h2 data-i18n='alarms'></h2><button id='toggleMute'></button><div id='alarmState'></div></section>"
+    "<section><h2 data-i18n='calibration'></h2><label data-i18n='uvi_max'></label><input id='calUviMax' type='number' step='0.1'><label data-i18n='cal_duty'></label><input id='calDuty' type='number'><label data-i18n='cal_measured'></label><input id='calMeasured' type='number' step='0.01'><button id='applyCalibration' data-i18n='apply_calibration'></button></section>"
+    "<script>const I18N={fr:{language:'Langue',species_profile:'Profil d\'espèce',apply_profile:'Appliquer le profil',custom_profile:'Profil personnalisé',profile_name:'Nom du profil',save_custom:'Enregistrer',custom_schedule_hint:'JSON climate_schedule_t',light_control:'Contrôle lumineux',cct_day:'CCT Jour (‰)',cct_warm:'CCT Chaud (‰)',uva_set:'UVA consigne (‰)',uva_clamp:'UVA limite (‰)',uvb_set:'UVB consigne (‰)',uvb_clamp:'UVB limite (‰)',uvb_period:'Période UVB (s)',uvb_duty:'Duty UVB (‰)',sky_mode:'Mode ciel',apply_light:'Appliquer',telemetry:'Télémétries en temps réel',metric:'Mesure',value:'Valeur',ota_updates:'Mises à jour OTA',controller_fw:'Firmware contrôleur (.bin)',flash_controller:'Flasher contrôleur',dome_fw:'Firmware dôme (.bin)',flash_dome:'Flasher dôme',alarms:'Alarmes',apply_calibration:'Enregistrer calibration',calibration:'Calibration UVB',uvi_max:'UVI cible',cal_duty:'Duty mesuré (‰)',cal_measured:'UVI mesuré'},en:{language:'Language',species_profile:'Species profile',apply_profile:'Apply profile',custom_profile:'Custom profile',profile_name:'Profile name',save_custom:'Save custom profile',custom_schedule_hint:'climate_schedule_t JSON payload',light_control:'Lighting control',cct_day:'CCT Day (‰)',cct_warm:'CCT Warm (‰)',uva_set:'UVA setpoint (‰)',uva_clamp:'UVA clamp (‰)',uvb_set:'UVB setpoint (‰)',uvb_clamp:'UVB clamp (‰)',uvb_period:'UVB period (s)',uvb_duty:'UVB duty (‰)',sky_mode:'Sky mode',apply_light:'Apply',telemetry:'Real-time telemetry',metric:'Metric',value:'Value',ota_updates:'OTA updates',controller_fw:'Controller firmware (.bin)',flash_controller:'Flash controller',dome_fw:'Dome firmware (.bin)',flash_dome:'Flash dome',alarms:'Alarms',apply_calibration:'Apply calibration',calibration:'UVB calibration',uvi_max:'Target UVI',cal_duty:'Duty measured (‰)',cal_measured:'Measured UVI'},es:{language:'Idioma',species_profile:'Perfil de especie',apply_profile:'Aplicar perfil',custom_profile:'Perfil personalizado',profile_name:'Nombre del perfil',save_custom:'Guardar personalizado',custom_schedule_hint:'JSON climate_schedule_t',light_control:'Control lumínico',cct_day:'CCT Día (‰)',cct_warm:'CCT Cálido (‰)',uva_set:'UVA consigna (‰)',uva_clamp:'UVA límite (‰)',uvb_set:'UVB consigna (‰)',uvb_clamp:'UVB límite (‰)',uvb_period:'Periodo UVB (s)',uvb_duty:'Duty UVB (‰)',sky_mode:'Modo cielo',apply_light:'Aplicar',telemetry:'Telemetría en tiempo real',metric:'Métrica',value:'Valor',ota_updates:'Actualizaciones OTA',controller_fw:'Firmware controlador (.bin)',flash_controller:'Flashear controlador',dome_fw:'Firmware cúpula (.bin)',flash_dome:'Flashear cúpula',alarms:'Alarmas',apply_calibration:'Guardar calibración',calibration:'Calibración UVB',uvi_max:'UVI objetivo',cal_duty:'Duty medido (‰)',cal_measured:'UVI medido'}};let lang='fr';const banner=document.getElementById('statusBanner');function setLang(l){lang=l;const dict=I18N[l]||I18N.fr;document.querySelectorAll('[data-i18n]').forEach(el=>{const k=el.getAttribute('data-i18n');if(dict[k])el.textContent=dict[k];});document.querySelectorAll('[data-i18n-placeholder]').forEach(el=>{const k=el.getAttribute('data-i18n-placeholder');if(dict[k])el.setAttribute('placeholder',dict[k]);});document.getElementById('toggleMute').textContent=dict.alarms+' – mute';}
+    "async function fetchJSON(url,opts){const r=await fetch(url,opts);if(!r.ok) throw new Error(await r.text());return r.json();}function permilleFromReg(v){return v*40;}function regFromPermille(p){return Math.min(255,Math.max(0,Math.round(p/40)));}function updateBanner(text,isErr){banner.textContent=text;banner.className=isErr?'error':'ok';}const chartCtx=document.getElementById('telemetryChart').getContext('2d');const chartState={points:[]};function renderChart(){const ctx=chartCtx;const {width,height}=ctx.canvas;ctx.clearRect(0,0,width,height);ctx.strokeStyle='#2dd4ff';ctx.lineWidth=2;ctx.beginPath();chartState.points.forEach((p,i)=>{const x=width*(i/(chartState.points.length-1||1));const y=height*(1-p.tempNorm);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();ctx.strokeStyle='#fbbf24';ctx.beginPath();chartState.points.forEach((p,i)=>{const x=width*(i/(chartState.points.length-1||1));const y=height*(1-p.humNorm);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();}
+    "async function refreshSpecies(){const data=await fetchJSON('/api/species');const select=document.getElementById('speciesSelect');select.innerHTML='';const addOpt=(key,label)=>{const o=document.createElement('option');o.value=key;o.textContent=label;select.appendChild(o);};data.builtin.forEach(p=>{const label=(I18N[lang]?I18N[lang].species_profile: 'Profile')+': '+(p.labels[lang]||p.labels.fr);addOpt(p.key,(p.labels[lang]||p.labels.fr));});data.custom.forEach(p=>addOpt(p.key,p.name+' (custom)'));if(data.active_key)select.value=data.active_key;}async function refreshStatus(){try{const status=await fetchJSON('/api/status');const dict=I18N[lang]||I18N.fr;updateBanner(status.summary,false);document.getElementById('cctDay').value=status.light.cct.day;document.getElementById('cctWarm').value=status.light.cct.warm;document.getElementById('uvaSet').value=status.light.uva.set;document.getElementById('uvaClamp').value=status.light.uva.clamp;document.getElementById('uvbSet').value=status.light.uvb.set;document.getElementById('uvbClamp').value=status.light.uvb.clamp;document.getElementById('uvbPeriod').value=status.light.uvb.period_s;document.getElementById('uvbDuty').value=status.light.uvb.duty_pm;document.getElementById('skyMode').value=status.light.sky;document.getElementById('alarmState').textContent=status.alarms.muted?'Muted':'Active';document.getElementById('calUviMax').value=status.calibration.uvi_max.toFixed(2);document.getElementById('calDuty').value=status.calibration.last_duty_pm.toFixed(0);document.getElementById('calMeasured').value=status.calibration.last_uvi.toFixed(2);const table=document.getElementById('telemetryTable');table.innerHTML='';const rows=[['Temp °C',status.env.temperature.toFixed(1)],['Hum %',status.env.humidity.toFixed(1)],['Press hPa',status.env.pressure.toFixed(1)],['UVI',status.env.uvi.toFixed(2)],['Fan %',status.light.fan_pwm.toFixed(0)],['Heatsink °C',status.dome.heatsink_c.toFixed(1)]];rows.forEach(([k,v])=>{const tr=document.createElement('tr');const td1=document.createElement('td');td1.textContent=k;const td2=document.createElement('td');td2.textContent=v;tr.appendChild(td1);tr.appendChild(td2);table.appendChild(tr);});chartState.points.push({tempNorm:Math.min(1,Math.max(0,(status.env.temperature-10)/30)),humNorm:Math.min(1,Math.max(0,status.env.humidity/100))});if(chartState.points.length>120)chartState.points.shift();renderChart();}catch(e){updateBanner('Status error: '+e.message,true);}}
+    "document.getElementById('languageSelect').addEventListener('change',e=>{setLang(e.target.value);refreshSpecies();});document.getElementById('applyLight').addEventListener('click',async()=>{const payload={cct:{day:+cctDay.value,warm:+cctWarm.value},uva:{set:+uvaSet.value,clamp:+uvaClamp.value},uvb:{set:+uvbSet.value,clamp:+uvbClamp.value,period_s:+uvbPeriod.value,duty_pm:+uvbDuty.value},sky:+skyMode.value};await fetchJSON('/api/light/dome0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refreshStatus();});document.getElementById('applySpecies').addEventListener('click',async()=>{const key=document.getElementById('speciesSelect').value;await fetchJSON('/api/species/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});refreshSpecies();});document.getElementById('saveCustom').addEventListener('click',async()=>{const name=document.getElementById('customName').value.trim();if(!name){alert('Name required');return;}try{const schedule=JSON.parse(document.getElementById('customSchedule').value);await fetchJSON('/api/species/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,schedule})});refreshSpecies();}catch(err){alert('Invalid JSON: '+err.message);}});document.getElementById('toggleMute').addEventListener('click',async()=>{const r=await fetchJSON('/api/alarms/mute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:true})});document.getElementById('alarmState').textContent=r.muted?'Muted':'Active';});document.getElementById('applyCalibration').addEventListener('click',async()=>{await fetchJSON('/api/calibrate/uvb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duty_pm:+calDuty.value,uvi:+calMeasured.value,uvi_max:+calUviMax.value})});refreshStatus();});async function uploadFirmware(inputId,url,progressId){const file=document.getElementById(inputId).files[0];if(!file){alert('No file');return;}const formData=new FormData();formData.append('bin',file);const res=await fetch(url,{method:'POST',body:formData});if(!res.ok){throw new Error(await res.text());}const reader=res.body.getReader();const progress=document.getElementById(progressId);let received=0;const contentLength=+(res.headers.get('X-OTA-Size')||file.size);while(true){const {done,value}=await reader.read();if(done)break;received+=value.length;progress.value=Math.min(100,Math.round(received/contentLength*100));}progress.value=100;}document.getElementById('flashController').addEventListener('click',()=>uploadFirmware('controllerBin','/api/ota/controller','controllerProgress').catch(e=>alert(e.message)));document.getElementById('flashDome').addEventListener('click',()=>uploadFirmware('domeBin','/api/ota/dome','domeProgress').catch(e=>alert(e.message)));setLang('fr');refreshSpecies();refreshStatus();setInterval(refreshStatus,5000);</script></body></html>";
+
+static float permille_from_reg(uint8_t reg_value)
+{
+    return (float)reg_value * 40.0f;
+}
+
+static uint8_t reg_from_permille(float value)
+{
+    if (value < 0.0f) {
+        value = 0.0f;
+    }
+    if (value > 10000.0f) {
+        value = 10000.0f;
+    }
+    return (uint8_t)((value + 20.0f) / 40.0f);
+}
+
+static uint16_t rd16_le(const uint8_t *buf)
+{
+    return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+}
+
+static void wr16_le(uint8_t *buf, uint16_t value)
+{
+    buf[0] = (uint8_t)(value & 0xFF);
+    buf[1] = (uint8_t)(value >> 8);
+}
+
+static esp_err_t read_dome_status(cJSON *root)
+{
+    uint8_t status = 0;
+    uint8_t cct_buf[DOME_REG_BLOCK_CCT_LEN] = {0};
+    uint8_t uva_buf[DOME_REG_BLOCK_UVA_LEN] = {0};
+    uint8_t uvb_buf[DOME_REG_BLOCK_UVB_LEN] = {0};
+    uint8_t fan_buf[DOME_REG_BLOCK_FAN_LEN] = {0};
+    uint8_t uvi_buf[DOME_REG_BLOCK_UVI_LEN] = {0};
+    uint8_t heat_buf[DOME_REG_BLOCK_HEATSINK_LEN] = {0};
+
+    ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_STATUS, &status, 1), TAG, "status read");
+    ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_CCT, cct_buf, sizeof(cct_buf)), TAG, "cct read");
+    ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_UVA, uva_buf, sizeof(uva_buf)), TAG, "uva read");
+    ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_UVB, uvb_buf, sizeof(uvb_buf)), TAG, "uvb read");
+    ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_SKY_CFG, &fan_buf[0], 1), TAG, "sky read");
+    ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_FAN, fan_buf, sizeof(fan_buf)), TAG, "fan read");
+    ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_UVI, uvi_buf, sizeof(uvi_buf)), TAG, "uvi read");
+    ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_HEATSINK, heat_buf, sizeof(heat_buf)), TAG, "heatsink read");
+
+    cJSON *light = cJSON_AddObjectToObject(root, "light");
+    cJSON *cct = cJSON_AddObjectToObject(light, "cct");
+    cJSON_AddNumberToObject(cct, "day", rd16_le(&cct_buf[0]));
+    cJSON_AddNumberToObject(cct, "warm", rd16_le(&cct_buf[2]));
+
+    cJSON *uva = cJSON_AddObjectToObject(light, "uva");
+    cJSON_AddNumberToObject(uva, "set", rd16_le(&uva_buf[0]));
+    cJSON_AddNumberToObject(uva, "clamp", rd16_le(&uva_buf[2]));
+
+    cJSON *uvb = cJSON_AddObjectToObject(light, "uvb");
+    cJSON_AddNumberToObject(uvb, "set", permille_from_reg(uvb_buf[1]));
+    cJSON_AddNumberToObject(uvb, "clamp", permille_from_reg(uvb_buf[2]));
+    cJSON_AddNumberToObject(uvb, "period_s", uvb_buf[0]);
+    cJSON_AddNumberToObject(uvb, "duty_pm", permille_from_reg(uvb_buf[1]));
+
+    cJSON_AddNumberToObject(light, "sky", fan_buf[0]);
+    cJSON_AddNumberToObject(light, "fan_pwm", (float)rd16_le(&fan_buf[1]) * 100.0f / 4095.0f);
+
+    cJSON *dome = cJSON_AddObjectToObject(root, "dome");
+    cJSON_AddNumberToObject(dome, "status", status);
+    cJSON_AddNumberToObject(dome, "flags", heat_buf[1]);
+    int8_t heat = (int8_t)heat_buf[0];
+    cJSON_AddNumberToObject(dome, "heatsink_c", (float)heat);
+    float uvi = (float)rd16_le(uvi_buf) / 256.0f;
+    cJSON_AddNumberToObject(dome, "uvi", uvi);
+
+    char summary[160];
+    snprintf(summary, sizeof(summary), "Status 0x%02X – Heatsink %.1f°C – UVI %.2f", status, (float)heat, uvi);
+    cJSON_AddStringToObject(root, "summary", summary);
     return ESP_OK;
 }
 
-static esp_err_t api_get_handler(httpd_req_t *req){
-#if TCA_PRESENT
-    tca9548a_select(I2C_NUM_0, TCA_ADDR, TCA_CH_DOME0);
-#endif
-    uint8_t cct1_l=0,cct1_h=0,cct2_l=0,cct2_h=0, uva=0, uvb=0, sky=0, per=0, duty=0, status=0;
-    dome_bus_read( 0x00, &status, 1);
-    dome_bus_read( 0x02, &cct1_l, 1);
-    dome_bus_read( 0x03, &cct1_h, 1);
-    dome_bus_read( 0x04, &cct2_l, 1);
-    dome_bus_read( 0x05, &cct2_h, 1);
-    dome_bus_read( 0x06, &uva, 1);
-    dome_bus_read( 0x07, &uvb, 1);
-    dome_bus_read( 0x08, &sky, 1);
-    dome_bus_read( 0x0B, &per, 1);
-    dome_bus_read( 0x0C, &duty, 1);
+static esp_err_t root_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, ROOT_HTML, HTTPD_RESP_USE_STRLEN);
+}
 
-    cJSON *j = cJSON_CreateObject();
-    cJSON_AddNumberToObject(j,"status",status);
-    cJSON *cct = cJSON_AddObjectToObject(j,"cct");
-    cJSON_AddNumberToObject(cct,"day", (int)(cct1_l | (cct1_h<<8)));
-    cJSON_AddNumberToObject(cct,"warm",(int)(cct2_l | (cct2_h<<8)));
-    cJSON *juva = cJSON_AddObjectToObject(j,"uva");
-    cJSON_AddNumberToObject(juva,"set",uva*100);
-    cJSON *juvb = cJSON_AddObjectToObject(j,"uvb");
-    cJSON_AddNumberToObject(juvb,"set",uvb*100);
-    cJSON_AddNumberToObject(juvb,"period_s", per);
-    cJSON_AddNumberToObject(juvb,"duty_pm", duty);
-    cJSON_AddNumberToObject(j,"sky", sky);
+static esp_err_t api_status_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return ESP_ERR_NO_MEM;
+    }
 
+    terra_sensors_t sensors = {0};
+    sensors_read(&sensors);
+    float temp = sensors.sht31_present ? sensors.sht31_t_c : sensors.bme_present ? sensors.bme_t_c : sensors.sht21_present ? sensors.sht21_t_c : sensors.t1_present ? sensors.t1_c : sensors.t2_c;
+    float hum = sensors.sht31_present ? sensors.sht31_rh : sensors.bme_present ? sensors.bme_rh : sensors.sht21_rh;
+    cJSON *env = cJSON_AddObjectToObject(root, "env");
+    cJSON_AddNumberToObject(env, "temperature", temp);
+    cJSON_AddNumberToObject(env, "humidity", hum);
+    cJSON_AddNumberToObject(env, "pressure", sensors.bme_p_hpa);
+    cJSON_AddNumberToObject(env, "uvi", 0.0f);
+
+    cJSON *alarms = cJSON_AddObjectToObject(root, "alarms");
+    bool muted = alarms_get_mute();
+    cJSON_AddBoolToObject(alarms, "muted", muted);
+
+    float k = 0.0f, uvi_max = 0.0f;
+    calib_get_uvb(&k, &uvi_max);
+    cJSON *cal = cJSON_AddObjectToObject(root, "calibration");
+    cJSON_AddNumberToObject(cal, "k", k);
+    cJSON_AddNumberToObject(cal, "uvi_max", uvi_max);
+    cJSON_AddNumberToObject(cal, "last_duty_pm", k > 0 ? uvi_max / k : 0);
+    cJSON_AddNumberToObject(cal, "last_uvi", uvi_max);
+
+    read_dome_status(root);
+
+    climate_state_t state = {0};
+    if (climate_get_state(&state)) {
+        cJSON *cl = cJSON_AddObjectToObject(root, "climate");
+        cJSON_AddBoolToObject(cl, "is_day", state.is_day);
+        cJSON_AddNumberToObject(cl, "temp_setpoint", state.temp_setpoint_c);
+        cJSON_AddNumberToObject(cl, "humidity_setpoint", state.humidity_setpoint_pct);
+        cJSON_AddNumberToObject(cl, "uvi_target", state.uvi_target);
+        cJSON_AddBoolToObject(cl, "heater_on", state.heater_on);
+        cJSON_AddBoolToObject(cl, "lights_on", state.lights_on);
+        cJSON_AddBoolToObject(cl, "fail_safe_active", !isfinite(state.temp_error_c));
+        if (!isfinite(state.temp_error_c)) {
+            cJSON *summary = cJSON_GetObjectItem(root, "summary");
+            if (cJSON_IsString(summary)) {
+                char extended[196];
+                snprintf(extended, sizeof(extended), "%s – fail-safe actif (capteurs T)", summary->valuestring);
+                cJSON_ReplaceItemInObject(root, "summary", cJSON_CreateString(extended));
+            }
+        }
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) {
+        return ESP_ERR_NO_MEM;
+    }
     httpd_resp_set_type(req, "application/json");
-    char* out = cJSON_PrintUnformatted(j);
-    httpd_resp_sendstr(req, out);
-    free(out); cJSON_Delete(j);
-    return ESP_OK;
+    esp_err_t err = httpd_resp_sendstr(req, json);
+    free(json);
+    return err;
 }
 
-static esp_err_t api_post_handler(httpd_req_t *req){
+static esp_err_t api_light_get(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (read_dome_status(root) != ESP_OK) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "dome read failed");
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) {
+        return ESP_ERR_NO_MEM;
+    }
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_sendstr(req, json);
+    free(json);
+    return err;
+}
+
+static esp_err_t api_light_post(httpd_req_t *req)
+{
     char buf[512];
-    int rlen = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (rlen <= 0) {
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) {
         return ESP_FAIL;
     }
-    buf[rlen] = 0;
+    buf[len] = '\0';
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json");
+    }
+    cJSON *cct = cJSON_GetObjectItem(root, "cct");
+    cJSON *uva = cJSON_GetObjectItem(root, "uva");
+    cJSON *uvb = cJSON_GetObjectItem(root, "uvb");
+    cJSON *sky = cJSON_GetObjectItem(root, "sky");
+    if (!cct || !uva || !uvb) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing fields");
+    }
 
-    cJSON *j = cJSON_Parse(buf);
-    if(!j) return ESP_FAIL;
+    uint8_t cct_buf[4];
+    wr16_le(&cct_buf[0], (uint16_t)cJSON_GetObjectItem(cct, "day")->valueint);
+    wr16_le(&cct_buf[2], (uint16_t)cJSON_GetObjectItem(cct, "warm")->valueint);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(dome_bus_write(DOME_REG_BLOCK_CCT, cct_buf, sizeof(cct_buf)));
 
-    cJSON *cct = cJSON_GetObjectItem(j,"cct");
-    cJSON *uva = cJSON_GetObjectItem(j,"uva");
-    cJSON *uvb = cJSON_GetObjectItem(j,"uvb");
-    cJSON *sky = cJSON_GetObjectItem(j,"sky");
+    uint8_t uva_buf[4];
+    wr16_le(&uva_buf[0], (uint16_t)cJSON_GetObjectItem(uva, "set")->valueint);
+    wr16_le(&uva_buf[2], (uint16_t)cJSON_GetObjectItem(uva, "clamp")->valueint);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(dome_bus_write(DOME_REG_BLOCK_UVA, uva_buf, sizeof(uva_buf)));
 
-#if TCA_PRESENT
-    tca9548a_select(I2C_NUM_0, TCA_ADDR, TCA_CH_DOME0);
-#endif
-    // Write CCT1/2
-    int day = cJSON_GetObjectItem(cct,"day")->valueint;
-    int warm= cJSON_GetObjectItem(cct,"warm")->valueint;
-    uint8_t p[4] = { day & 0xFF, (day>>8)&0xFF, warm & 0xFF, (warm>>8)&0xFF };
-    dome_bus_write( 0x02, p, 4);
+    float uvb_set = cJSON_GetObjectItem(uvb, "set")->valuedouble;
+    float uvb_clamp = cJSON_GetObjectItem(uvb, "clamp")->valuedouble;
+    float period = cJSON_GetObjectItem(uvb, "period_s")->valuedouble;
+    float duty_req = cJSON_GetObjectItem(uvb, "duty_pm")->valuedouble;
+    float k = 0.0f, uvi_max = 0.0f;
+    calib_get_uvb(&k, &uvi_max);
+    if (k > 0 && uvi_max > 0) {
+        float allowed = uvi_max / k;
+        if (uvb_set > allowed) {
+            uvb_set = allowed;
+        }
+        if (duty_req > allowed) {
+            duty_req = allowed;
+        }
+    }
+    uint8_t uvb_buf[3];
+    uvb_buf[0] = (uint8_t)period;
+    uvb_buf[1] = reg_from_permille(duty_req);
+    uvb_buf[2] = reg_from_permille(uvb_clamp);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(dome_bus_write(DOME_REG_BLOCK_UVB, uvb_buf, sizeof(uvb_buf)));
 
-    // UVA set (permille)
-    int uva_set = cJSON_GetObjectItem(uva,"set")->valueint;
-    uint8_t uva_b = (uint8_t)(uva_set/100);
-    dome_bus_write( 0x06, &uva_b, 1);
+    if (sky) {
+        uint8_t sky_val = (uint8_t)sky->valueint;
+        ESP_ERROR_CHECK_WITHOUT_ABORT(dome_bus_write(DOME_REG_SKY_CFG, &sky_val, 1));
+    }
 
-    // UVB with UVI clamp via calibration k
-    float k=0, uvi_max=0; calib_get_uvb(&k,&uvi_max);
-    int uvb_set = cJSON_GetObjectItem(uvb,"set")->valueint; // permille
-    float allowed_duty_pm = (uvi_max>0 && k>0) ? (uvi_max / k) : uvb_set;
-    if (uvb_set > (int)allowed_duty_pm) uvb_set = (int)allowed_duty_pm;
-    uint8_t uvb_b = (uint8_t)(uvb_set/100);
-    dome_bus_write( 0x07, &uvb_b, 1);
-    // period + duty
-    int uvb_per = cJSON_GetObjectItem(uvb,"period_s")->valueint;
-    int uvb_duty= cJSON_GetObjectItem(uvb,"duty_pm")->valueint;
-    uint8_t per_b = (uint8_t)uvb_per, duty_b = (uint8_t)uvb_duty;
-    dome_bus_write( 0x0B, &per_b, 1);
-    dome_bus_write( 0x0C, &duty_b, 1);
-
-    // Sky
-    uint8_t sky_b = (uint8_t)sky->valueint;
-    dome_bus_write( 0x08, &sky_b, 1);
-
-    cJSON_Delete(j);
+    cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true}");
-    return ESP_OK;
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
-static esp_err_t status_handler(httpd_req_t *req){
-    terra_sensors_t s = {0};
-    sensors_read(&s);
-#if TCA_PRESENT
-    tca9548a_select(I2C_NUM_0, TCA_ADDR, TCA_CH_DOME0);
-#endif
-    uint8_t status=0, theat=0;
-    dome_bus_read( 0x00, &status, 1);
-    dome_bus_read( 0x20, &theat, 1);
-
-    cJSON *j = cJSON_CreateObject();
-    cJSON *sens = cJSON_AddObjectToObject(j,"sensors");
-    cJSON_AddNumberToObject(sens,"ds18b20_bus1_c", s.t1_c);
-    cJSON_AddBoolToObject(sens,"ds18b20_bus1_present", s.t1_present);
-    cJSON_AddNumberToObject(sens,"ds18b20_bus2_c", s.t2_c);
-    cJSON_AddBoolToObject(sens,"ds18b20_bus2_present", s.t2_present);
-    cJSON_AddNumberToObject(sens,"sht31_t_c", s.sht31_t_c);
-    cJSON_AddBoolToObject(sens,"sht31_present", s.sht31_present);
-    cJSON_AddNumberToObject(sens,"sht31_rh", s.sht31_rh);
-    cJSON_AddNumberToObject(sens,"sht21_t_c", s.sht21_t_c);
-    cJSON_AddNumberToObject(sens,"sht21_rh", s.sht21_rh);
-    cJSON_AddBoolToObject(sens,"sht21_present", s.sht21_present);
-    cJSON_AddNumberToObject(sens,"bme280_t_c", s.bme_t_c);
-    cJSON_AddNumberToObject(sens,"bme280_rh", s.bme_rh);
-    cJSON_AddNumberToObject(sens,"bme280_p_hpa", s.bme_p_hpa);
-    cJSON_AddBoolToObject(sens,"bme280_present", s.bme_present);
-
-    cJSON *d = cJSON_AddObjectToObject(j,"dome");
-    cJSON_AddNumberToObject(d,"status", status);
-    cJSON_AddBoolToObject(d,"interlock", (status & (1<<5))!=0);
-    cJSON_AddBoolToObject(d,"therm_hard", (status & (1<<6))!=0);
-    cJSON_AddBoolToObject(d,"ot_soft", (status & 1)!=0);
-    cJSON_AddBoolToObject(d,"bus_loss_degraded", dome_bus_is_degraded());
-    cJSON_AddNumberToObject(d,"t_heatsink_c", (int)theat);
-
-    char* out = cJSON_PrintUnformatted(j);
+static esp_err_t api_calibration_get(httpd_req_t *req)
+{
+    float k = 0.0f, uvi_max = 0.0f;
+    calib_get_uvb(&k, &uvi_max);
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddNumberToObject(root, "k", k);
+    cJSON_AddNumberToObject(root, "uvi_max", uvi_max);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) {
+        return ESP_ERR_NO_MEM;
+    }
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, out);
-    free(out); cJSON_Delete(j);
-    return ESP_OK;
+    esp_err_t err = httpd_resp_sendstr(req, json);
+    free(json);
+    return err;
 }
 
-static esp_err_t calib_get_handler(httpd_req_t *req){
-    float k=0, uvi_max=0; calib_get_uvb(&k,&uvi_max);
-    cJSON *j=cJSON_CreateObject();
-    cJSON_AddNumberToObject(j,"k",k);
-    cJSON_AddNumberToObject(j,"uvi_max",uvi_max);
-    char* out=cJSON_PrintUnformatted(j);
-    httpd_resp_set_type(req,"application/json");
-    httpd_resp_sendstr(req,out);
-    free(out); cJSON_Delete(j);
-    return ESP_OK;
-}
-
-static esp_err_t calib_post_handler(httpd_req_t *req){
+static esp_err_t api_calibration_post(httpd_req_t *req)
+{
     char buf[256];
-    int r = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (r <= 0) {
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) {
         return ESP_FAIL;
     }
-    buf[r] = 0;
-
-    cJSON* j=cJSON_Parse(buf);
-    if(!j) return ESP_FAIL;
-    float duty_pm = cJSON_GetObjectItem(j,"duty_pm")->valuedouble;
-    float uvi     = cJSON_GetObjectItem(j,"uvi")->valuedouble;
-    float uvi_max = cJSON_GetObjectItem(j,"uvi_max")->valuedouble;
-    calib_init();
-    if (uvi_max>0) calib_set_uvb_uvi_max(uvi_max);
-    if (duty_pm>0 && uvi>0) calib_set_uvb(duty_pm, uvi);
-    cJSON_Delete(j);
-    httpd_resp_set_type(req,"application/json");
-    httpd_resp_sendstr(req,"{\"ok\":true}");
-    return ESP_OK;
+    buf[len] = '\0';
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json");
+    }
+    double duty = cJSON_GetObjectItem(root, "duty_pm")->valuedouble;
+    double uvi = cJSON_GetObjectItem(root, "uvi")->valuedouble;
+    double uvi_max = cJSON_GetObjectItem(root, "uvi_max")->valuedouble;
+    if (uvi > 0 && duty > 0) {
+        calib_set_uvb(duty, uvi);
+    }
+    if (uvi_max > 0) {
+        calib_set_uvb_uvi_max(uvi_max);
+    }
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
-static esp_err_t alarms_mute_get(httpd_req_t *req){
-    bool m = alarms_get_mute();
-    char buf[64]; snprintf(buf,sizeof(buf),"{\"muted\":%s}", m?"true":"false");
-    httpd_resp_set_type(req,"application/json");
-    httpd_resp_sendstr(req, buf);
-    return ESP_OK;
+static esp_err_t api_alarms_mute(httpd_req_t *req)
+{
+    bool muted = alarms_get_mute();
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"muted\":%s}", muted ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, buf);
 }
 
-static esp_err_t alarms_mute_post(httpd_req_t *req){
+static esp_err_t api_alarms_toggle(httpd_req_t *req)
+{
     char buf[128];
-    int r = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (r <= 0) {
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) {
         return ESP_FAIL;
     }
-    buf[r] = 0;
+    buf[len] = '\0';
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json");
+    }
+    cJSON *toggle = cJSON_GetObjectItem(root, "toggle");
+    if (toggle && cJSON_IsTrue(toggle)) {
+        alarms_set_mute(!alarms_get_mute());
+    }
+    bool muted = alarms_get_mute();
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    char out[64];
+    snprintf(out, sizeof(out), "{\"muted\":%s}", muted ? "true" : "false");
+    return httpd_resp_sendstr(req, out);
+}
 
-    cJSON* j=cJSON_Parse(buf);
-    if(!j) return ESP_FAIL;
-    cJSON* jm=cJSON_GetObjectItem(j,"muted");
-    if (jm && cJSON_IsBool(jm)){ alarms_set_mute(cJSON_IsTrue(jm)); }
-    cJSON_Delete(j);
-    httpd_resp_set_type(req,"application/json");
-    httpd_resp_sendstr(req,"{\"ok\":true}");
+static cJSON *schedule_to_json(const climate_schedule_t *schedule)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return NULL;
+    }
+    cJSON_AddNumberToObject(root, "day_start_minute", schedule->day_start_minute);
+    cJSON_AddNumberToObject(root, "night_start_minute", schedule->night_start_minute);
+    cJSON *day = cJSON_AddObjectToObject(root, "day");
+    cJSON_AddNumberToObject(day, "temp_c", schedule->day.temp_c);
+    cJSON_AddNumberToObject(day, "humidity_pct", schedule->day.humidity_pct);
+    cJSON_AddNumberToObject(day, "temp_hysteresis_c", schedule->day.temp_hysteresis_c);
+    cJSON_AddNumberToObject(day, "humidity_hysteresis_pct", schedule->day.humidity_hysteresis_pct);
+    cJSON_AddNumberToObject(day, "uvi_max", schedule->day_uvi_max);
+    cJSON *night = cJSON_AddObjectToObject(root, "night");
+    cJSON_AddNumberToObject(night, "temp_c", schedule->night.temp_c);
+    cJSON_AddNumberToObject(night, "humidity_pct", schedule->night.humidity_pct);
+    cJSON_AddNumberToObject(night, "temp_hysteresis_c", schedule->night.temp_hysteresis_c);
+    cJSON_AddNumberToObject(night, "humidity_hysteresis_pct", schedule->night.humidity_hysteresis_pct);
+    cJSON_AddNumberToObject(night, "uvi_max", schedule->night_uvi_max);
+    return root;
+}
+
+static esp_err_t api_species_get(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return ESP_ERR_NO_MEM;
+    }
+    char active[32] = {0};
+    if (species_profiles_get_active_key(active, sizeof(active)) == ESP_OK) {
+        cJSON_AddStringToObject(root, "active_key", active);
+    }
+    cJSON *builtin = cJSON_AddArrayToObject(root, "builtin");
+    for (size_t i = 0; i < species_profiles_builtin_count(); ++i) {
+        const species_profile_t *profile = species_profiles_builtin(i);
+        cJSON *entry = cJSON_CreateObject();
+        cJSON_AddStringToObject(entry, "key", profile->key);
+        cJSON *labels = cJSON_AddObjectToObject(entry, "labels");
+        cJSON_AddStringToObject(labels, "fr", profile->label_fr);
+        cJSON_AddStringToObject(labels, "en", profile->label_en);
+        cJSON_AddStringToObject(labels, "es", profile->label_es);
+        cJSON_AddStringToObject(entry, "habitat", profile->habitat);
+        cJSON *sched = schedule_to_json(&profile->schedule);
+        cJSON_AddItemToObject(entry, "schedule", sched);
+        cJSON_AddItemToArray(builtin, entry);
+    }
+    cJSON *custom = cJSON_AddArrayToObject(root, "custom");
+    for (size_t i = 0;; ++i) {
+        species_custom_profile_t entry;
+        if (species_profiles_custom_get(i, &entry) != ESP_OK) {
+            break;
+        }
+        cJSON *obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(obj, "key", entry.key);
+        cJSON_AddStringToObject(obj, "name", entry.name);
+        cJSON *sched = schedule_to_json(&entry.schedule);
+        cJSON_AddItemToObject(obj, "schedule", sched);
+        cJSON_AddItemToArray(custom, obj);
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) {
+        return ESP_ERR_NO_MEM;
+    }
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_sendstr(req, json);
+    free(json);
+    return err;
+}
+
+static esp_err_t api_species_apply(httpd_req_t *req)
+{
+    char buf[128];
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) {
+        return ESP_FAIL;
+    }
+    buf[len] = '\0';
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json");
+    }
+    const char *key = cJSON_GetStringValue(cJSON_GetObjectItem(root, "key"));
+    if (!key) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing key");
+    }
+    esp_err_t err = species_profiles_apply(key);
+    cJSON_Delete(root);
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "unknown profile");
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+static esp_err_t api_species_custom(httpd_req_t *req)
+{
+    char buf[512];
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) {
+        return ESP_FAIL;
+    }
+    buf[len] = '\0';
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json");
+    }
+    const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(root, "name"));
+    cJSON *schedule_obj = cJSON_GetObjectItem(root, "schedule");
+    if (!name || !schedule_obj) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing fields");
+    }
+    climate_schedule_t schedule = {0};
+    schedule.day_start_minute = cJSON_GetObjectItem(schedule_obj, "day_start_minute")->valueint;
+    schedule.night_start_minute = cJSON_GetObjectItem(schedule_obj, "night_start_minute")->valueint;
+    cJSON *day = cJSON_GetObjectItem(schedule_obj, "day");
+    cJSON *night = cJSON_GetObjectItem(schedule_obj, "night");
+    schedule.day.temp_c = cJSON_GetObjectItem(day, "temp_c")->valuedouble;
+    schedule.day.humidity_pct = cJSON_GetObjectItem(day, "humidity_pct")->valuedouble;
+    schedule.day.temp_hysteresis_c = cJSON_GetObjectItem(day, "temp_hysteresis_c")->valuedouble;
+    schedule.day.humidity_hysteresis_pct = cJSON_GetObjectItem(day, "humidity_hysteresis_pct")->valuedouble;
+    schedule.day_uvi_max = cJSON_GetObjectItem(day, "uvi_max")->valuedouble;
+    schedule.night.temp_c = cJSON_GetObjectItem(night, "temp_c")->valuedouble;
+    schedule.night.humidity_pct = cJSON_GetObjectItem(night, "humidity_pct")->valuedouble;
+    schedule.night.temp_hysteresis_c = cJSON_GetObjectItem(night, "temp_hysteresis_c")->valuedouble;
+    schedule.night.humidity_hysteresis_pct = cJSON_GetObjectItem(night, "humidity_hysteresis_pct")->valuedouble;
+    schedule.night_uvi_max = cJSON_GetObjectItem(night, "uvi_max")->valuedouble;
+
+    char key[32];
+    esp_err_t err = species_profiles_save_custom(name, &schedule, key, sizeof(key));
+    cJSON_Delete(root);
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
+    }
+    httpd_resp_set_type(req, "application/json");
+    char out[128];
+    snprintf(out, sizeof(out), "{\"key\":\"%s\"}", key);
+    return httpd_resp_sendstr(req, out);
+}
+
+static esp_err_t handle_ota_controller(httpd_req_t *req)
+{
+    const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
+    if (!partition) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No OTA partition");
+    }
+    esp_ota_handle_t handle = 0;
+    ESP_RETURN_ON_ERROR(esp_ota_begin(partition, OTA_SIZE_UNKNOWN, &handle), TAG, "ota begin");
+    int total = 0;
+    int received;
+    char buf[1024];
+    while ((received = httpd_req_recv(req, buf, sizeof(buf))) > 0) {
+        ESP_RETURN_ON_ERROR(esp_ota_write(handle, buf, received), TAG, "ota write");
+        total += received;
+    }
+    if (received < 0) {
+        esp_ota_end(handle);
+        return ESP_FAIL;
+    }
+    ESP_RETURN_ON_ERROR(esp_ota_end(handle), TAG, "ota end");
+    ESP_RETURN_ON_ERROR(esp_ota_set_boot_partition(partition), TAG, "set boot");
+    httpd_resp_set_hdr(req, "X-OTA-Size", "0");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    ESP_LOGI(TAG, "Controller OTA flashed %d bytes", total);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
     return ESP_OK;
 }
 
-void httpd_start_basic(void){
-    calib_init();
-    sensors_init();
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    httpd_handle_t server = NULL;
-    if (httpd_start(&server, &config) == ESP_OK) {
-        httpd_uri_t root = {.uri="/", .method=HTTP_GET, .handler=root_get_handler, .user_ctx=NULL};
-        httpd_uri_t apig = {.uri="/api/light/dome0", .method=HTTP_GET, .handler=api_get_handler, .user_ctx=NULL};
-        httpd_uri_t apip = {.uri="/api/light/dome0", .method=HTTP_POST, .handler=api_post_handler, .user_ctx=NULL};
-        httpd_uri_t st   = {.uri="/api/status", .method=HTTP_GET, .handler=status_handler, .user_ctx=NULL};
-        httpd_uri_t cg   = {.uri="/api/calibrate/uvb", .method=HTTP_GET, .handler=calib_get_handler, .user_ctx=NULL};
-        httpd_uri_t cp   = {.uri="/api/calibrate/uvb", .method=HTTP_POST, .handler=calib_post_handler, .user_ctx=NULL};
-        httpd_register_uri_handler(server, &root);
-        httpd_register_uri_handler(server, &apig);
-        httpd_register_uri_handler(server, &apip);
-        httpd_register_uri_handler(server, &st);
-        httpd_register_uri_handler(server, &cg);
-        httpd_register_uri_handler(server, &cp);
-        httpd_uri_t amg = {.uri="/api/alarms/mute", .method=HTTP_GET, .handler=alarms_mute_get, .user_ctx=NULL};
-        httpd_uri_t amp = {.uri="/api/alarms/mute", .method=HTTP_POST, .handler=alarms_mute_post, .user_ctx=NULL};
-        httpd_register_uri_handler(server, &amg);
-        httpd_register_uri_handler(server, &amp);
-        ESP_LOGI(TAG, "HTTP server started");
+static esp_err_t dome_ota_chunk_cb(const uint8_t *chunk, size_t len, void *ctx)
+{
+    (void)ctx;
+    if (len == 0) {
+        return ESP_OK;
     }
+    ESP_RETURN_ON_ERROR(dome_bus_write(DOME_REG_BLOCK_OTA_DATA, chunk, len), TAG, "ota data");
+    uint8_t write_cmd = DOME_OTA_CMD_WRITE;
+    return dome_bus_write(DOME_REG_OTA_CMD, &write_cmd, 1);
+}
+
+static esp_err_t handle_ota_dome(httpd_req_t *req)
+{
+    uint8_t cmd = DOME_OTA_CMD_BEGIN;
+    ESP_RETURN_ON_ERROR(dome_bus_write(DOME_REG_OTA_CMD, &cmd, 1), TAG, "dome ota begin");
+    int received;
+    uint8_t buf[256];
+    while ((received = httpd_req_recv(req, (char *)buf, sizeof(buf))) > 0) {
+        esp_err_t err = ota_stream_chunks(buf, received, DOME_REG_BLOCK_OTA_DATA_LEN, dome_ota_chunk_cb, NULL);
+        if (err != ESP_OK) {
+            uint8_t abort_cmd = DOME_OTA_CMD_ABORT;
+            dome_bus_write(DOME_REG_OTA_CMD, &abort_cmd, 1);
+            return err;
+        }
+    }
+    if (received < 0) {
+        uint8_t abort_cmd = DOME_OTA_CMD_ABORT;
+        dome_bus_write(DOME_REG_OTA_CMD, &abort_cmd, 1);
+        return ESP_FAIL;
+    }
+    uint8_t commit = DOME_OTA_CMD_COMMIT;
+    ESP_RETURN_ON_ERROR(dome_bus_write(DOME_REG_OTA_CMD, &commit, 1), TAG, "ota commit");
+    httpd_resp_set_hdr(req, "X-OTA-Size", "0");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+void httpd_start_secure(void)
+{
+    if (s_server) {
+        return;
+    }
+    httpd_ssl_config_t conf = HTTPD_SSL_CONFIG_DEFAULT();
+    conf.httpd.uri_match_fn = httpd_uri_match_wildcard;
+    conf.port_secure = 443;
+    conf.servercert = (const uint8_t *)CONTROLLER_SERVER_CERT_PEM;
+    conf.servercert_len = strlen(CONTROLLER_SERVER_CERT_PEM);
+    conf.prvtkey_pem = (const uint8_t *)CONTROLLER_SERVER_KEY_PEM;
+    conf.prvtkey_len = strlen(CONTROLLER_SERVER_KEY_PEM);
+    conf.httpd.max_uri_handlers = 20;
+
+    esp_err_t err = httpd_ssl_start(&s_server, &conf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(err));
+        return;
+    }
+    ESP_LOGI(TAG, "HTTPS server running on port %d", conf.port_secure);
+
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/", .method = HTTP_GET, .handler = root_handler});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/status", .method = HTTP_GET, .handler = api_status_handler});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/light/dome0", .method = HTTP_GET, .handler = api_light_get});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/light/dome0", .method = HTTP_POST, .handler = api_light_post});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/calibrate/uvb", .method = HTTP_GET, .handler = api_calibration_get});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/calibrate/uvb", .method = HTTP_POST, .handler = api_calibration_post});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/alarms/mute", .method = HTTP_GET, .handler = api_alarms_mute});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/alarms/mute", .method = HTTP_POST, .handler = api_alarms_toggle});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/species", .method = HTTP_GET, .handler = api_species_get});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/species/apply", .method = HTTP_POST, .handler = api_species_apply});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/species/custom", .method = HTTP_POST, .handler = api_species_custom});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/ota/controller", .method = HTTP_POST, .handler = handle_ota_controller});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/ota/dome", .method = HTTP_POST, .handler = handle_ota_dome});
 }

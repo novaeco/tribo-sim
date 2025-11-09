@@ -20,6 +20,8 @@
 #include "drivers/sensors.h"
 #include "drivers/climate.h"
 #include "drivers/calib.h"
+#include "include/dome_regs.h"
+#include "species_profiles.h"
 #include "net/wifi.h"
 #include "net/httpd.h"
 #include "drivers/alarms.h"
@@ -33,6 +35,23 @@ static const uint8_t k_dome_channels[] = {
     0
 #endif
 };
+
+static inline void dome_wr16(uint8_t *buf, uint16_t value)
+{
+    buf[0] = (uint8_t)(value & 0xFF);
+    buf[1] = (uint8_t)(value >> 8);
+}
+
+static inline uint8_t dome_permille_to_reg(int permille)
+{
+    if (permille < 0) {
+        permille = 0;
+    }
+    if (permille > 10000) {
+        permille = 10000;
+    }
+    return (uint8_t)((permille + 20) / 40);
+}
 
 static bool pick_temperature(const terra_sensors_t *s, float *value)
 {
@@ -209,22 +228,18 @@ static void actuators_task(void *arg)
         int uva_pm = state.lights_on ? 6000 : 0;
         uint16_t cct_day = state.lights_on ? 9000 : 0;
         uint16_t cct_warm = state.lights_on ? 2000 : 0;
-        uint8_t uvb_reg = (uint8_t)(uvb_pm / 100);
-        uint8_t uva_reg = (uint8_t)(uva_pm / 100);
         uint8_t uvb_period = 60;
-        uint8_t uvb_duty = (uint8_t)(uvb_pm / 100);
-        if (uvb_pm > 0 && uvb_duty == 0) {
-            uvb_duty = 1;
-        }
-        if (uvb_duty > 255) {
-            uvb_duty = 255;
-        }
         uint8_t sky = state.lights_on ? 1 : 0;
-        uint8_t payload[4] = {
-            (uint8_t)(cct_day & 0xFF),
-            (uint8_t)((cct_day >> 8) & 0xFF),
-            (uint8_t)(cct_warm & 0xFF),
-            (uint8_t)((cct_warm >> 8) & 0xFF)
+        uint8_t cct_buf[4];
+        dome_wr16(&cct_buf[0], cct_day);
+        dome_wr16(&cct_buf[2], cct_warm);
+        uint8_t uva_buf[4];
+        dome_wr16(&uva_buf[0], (uint16_t)uva_pm);
+        dome_wr16(&uva_buf[2], (uint16_t)10000);
+        uint8_t uvb_buf[3] = {
+            uvb_period,
+            dome_permille_to_reg(uvb_pm),
+            dome_permille_to_reg(uvb_pm)
         };
 
         for (size_t i = 0; i < sizeof(k_dome_channels) / sizeof(k_dome_channels[0]); ++i) {
@@ -238,22 +253,16 @@ static void actuators_task(void *arg)
                 continue;
             }
 #endif
-            if (dome_bus_write(0x02, payload, sizeof(payload)) != ESP_OK) {
+            if (dome_bus_write(DOME_REG_BLOCK_CCT, cct_buf, sizeof(cct_buf)) != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to write CCT payload to dome");
             }
-            if (dome_bus_write(0x06, &uva_reg, 1) != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to write UVA setpoint");
+            if (dome_bus_write(DOME_REG_BLOCK_UVA, uva_buf, sizeof(uva_buf)) != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to write UVA block");
             }
-            if (dome_bus_write(0x07, &uvb_reg, 1) != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to write UVB setpoint");
+            if (dome_bus_write(DOME_REG_BLOCK_UVB, uvb_buf, sizeof(uvb_buf)) != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to write UVB block");
             }
-            if (dome_bus_write(0x0B, &uvb_period, 1) != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to write UVB period");
-            }
-            if (dome_bus_write(0x0C, &uvb_duty, 1) != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to write UVB duty");
-            }
-            if (dome_bus_write(0x08, &sky, 1) != ESP_OK) {
+            if (dome_bus_write(DOME_REG_SKY_CFG, &sky, 1) != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to write sky mode");
             }
         }
@@ -278,6 +287,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Alarms restored");
 
     ESP_ERROR_CHECK(climate_init());
+    ESP_ERROR_CHECK(species_profiles_init());
     ESP_ERROR_CHECK(calib_init());
 
     // Basic GPIOs
@@ -319,7 +329,7 @@ void app_main(void)
 
     // Bring Wi-Fi + HTTP up (stubs)
     wifi_start_apsta("terrarium-s3", "terrarium123");
-    httpd_start_basic();
+    httpd_start_secure();
 
     // Start alarms task (buzzer patterns)
     alarms_start();
@@ -329,7 +339,7 @@ void app_main(void)
 
     // Probe Dome via I2C, read STATUS
     uint8_t status = 0xFF;
-    if (dome_bus_read(0x00, &status, 1) == ESP_OK) {
+    if (dome_bus_read(DOME_REG_STATUS, &status, 1) == ESP_OK) {
         ESP_LOGI(TAG, "Dome STATUS: 0x%02X", status);
     } else {
         ESP_LOGW(TAG, "Dome not responding at 0x%02X", DOME_I2C_ADDR);

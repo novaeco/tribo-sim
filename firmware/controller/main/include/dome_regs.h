@@ -1,7 +1,6 @@
 #pragma once
 
-// Register map for I2C slave (Dome)
-// Multi-byte blocks are contiguous to support burst transactions.
+// Mirror of dome I2C register map for controller-side access.
 #define DOME_REG_STATUS               0x00
 #define DOME_REG_MODE                 0x01
 
@@ -48,39 +47,32 @@
 #define DOME_REG_DIAG_I2C_ERRORS      (DOME_REG_BLOCK_DIAG + 0)
 #define DOME_REG_DIAG_INT_COUNT_L     (DOME_REG_BLOCK_DIAG + 1)
 #define DOME_REG_DIAG_INT_COUNT_H     (DOME_REG_BLOCK_DIAG + 2)
-#define DOME_REG_DIAG_RESERVED        (DOME_REG_BLOCK_DIAG + 3)
 
 #define DOME_REG_BLOCK_OTA_CTRL       0x40
 #define DOME_REG_BLOCK_OTA_CTRL_LEN   4
 #define DOME_REG_OTA_CMD              (DOME_REG_BLOCK_OTA_CTRL + 0)
 #define DOME_REG_OTA_STATUS           (DOME_REG_BLOCK_OTA_CTRL + 1)
 #define DOME_REG_OTA_ERROR            (DOME_REG_BLOCK_OTA_CTRL + 2)
-#define DOME_REG_OTA_RESERVED         (DOME_REG_BLOCK_OTA_CTRL + 3)
 
 #define DOME_REG_BLOCK_OTA_DATA       0x44
 #define DOME_REG_BLOCK_OTA_DATA_LEN   32
 
 // STATUS bits
-#define ST_OT         (1<<0)  // Over-temp soft
+#define ST_OT         (1<<0)
 #define ST_UVA_LIMIT  (1<<1)
 #define ST_UVB_LIMIT  (1<<2)
 #define ST_FAN_FAIL   (1<<3)
 #define ST_BUS_LOSS   (1<<4)
 #define ST_INTERLOCK  (1<<5)
-#define ST_THERM_HARD (1<<6)  // hardware thermostat asserted
+#define ST_THERM_HARD (1<<6)
 #define ST_UVI_FAULT  (1<<7)
 
-// MODE bits
-#define MODE_ON      (1<<0)
-#define MODE_SKY     (1<<1)
-#define MODE_LOCK    (1<<7)
-
-// FAN flags
+// Fan flags
 #define FAN_FLAG_PRESENT   (1<<0)
 #define FAN_FLAG_RUNNING   (1<<1)
 #define FAN_FLAG_ALARM     (1<<2)
 
-// OTA commands / status codes
+// OTA commands
 #define DOME_OTA_CMD_IDLE      0x00
 #define DOME_OTA_CMD_BEGIN     0x01
 #define DOME_OTA_CMD_WRITE     0x02

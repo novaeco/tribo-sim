@@ -27,6 +27,8 @@ static climate_measurement_t s_measurement = {0};
 static bool               s_measurement_valid = false;
 static nvs_handle_t       s_nvs = 0;
 static bool               s_initialized = false;
+static int                s_temp_invalid_streak = 0;
+static int                s_humidity_invalid_streak = 0;
 
 static const climate_schedule_t k_default_schedule = {
     .day_start_minute = 8 * 60,
@@ -397,6 +399,7 @@ void climate_tick(const terra_sensors_t *sensors, int minute_of_day, climate_sta
     float temp_value = 0.0f;
     bool has_temp = pick_temperature(sensors, &temp_value);
     if (has_temp) {
+        s_temp_invalid_streak = 0;
         float lower = profile->temp_c - (profile->temp_hysteresis_c * 0.5f);
         float upper = profile->temp_c + (profile->temp_hysteresis_c * 0.5f);
         if (!s_state.heater_on && temp_value < lower) {
@@ -406,15 +409,24 @@ void climate_tick(const terra_sensors_t *sensors, int minute_of_day, climate_sta
         }
         s_state.temp_error_c = temp_value - profile->temp_c;
     } else {
-        s_state.heater_on = false;
+        if (s_temp_invalid_streak < 10) {
+            s_temp_invalid_streak++;
+        }
+        if (s_temp_invalid_streak >= 3) {
+            s_state.heater_on = false;
+        }
         s_state.temp_error_c = NAN;
     }
 
     float humidity_value = 0.0f;
     bool has_humidity = pick_humidity(sensors, &humidity_value);
     if (has_humidity) {
+        s_humidity_invalid_streak = 0;
         s_state.humidity_error_pct = humidity_value - profile->humidity_pct;
     } else {
+        if (s_humidity_invalid_streak < 10) {
+            s_humidity_invalid_streak++;
+        }
         s_state.humidity_error_pct = NAN;
     }
     s_state.fan_pwm_percent = compute_fan_pwm(profile, is_day, has_humidity, humidity_value);

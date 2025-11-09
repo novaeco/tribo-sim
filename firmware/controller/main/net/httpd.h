@@ -1,2 +1,2 @@
 #pragma once
-void httpd_start_basic(void);
+void httpd_start_secure(void);

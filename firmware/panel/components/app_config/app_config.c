@@ -18,6 +18,8 @@ void app_config_get_defaults(app_config_t *cfg)
     strlcpy(cfg->controller_host, APP_CONFIG_DEFAULT_HOST, sizeof(cfg->controller_host));
     cfg->controller_port = APP_CONFIG_DEFAULT_PORT;
     cfg->use_tls = APP_CONFIG_DEFAULT_USE_TLS;
+    strlcpy(cfg->language, APP_CONFIG_DEFAULT_LANGUAGE, sizeof(cfg->language));
+    strlcpy(cfg->species_key, APP_CONFIG_DEFAULT_SPECIES_KEY, sizeof(cfg->species_key));
 }
 
 esp_err_t app_config_load(app_config_t *cfg)

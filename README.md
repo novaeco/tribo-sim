@@ -14,7 +14,7 @@
 1. **Contrôleur** : ouvrir `firmware/controller` dans VSCode + PlatformIO → build + flash (`board = esp32-s3-devkitc-1`).
 2. **Dôme** : ouvrir `firmware/dome` → build + flash (même board).
 3. **Panel tactile** : `cd firmware/panel` → `idf.py set-target esp32s3 && idf.py build flash monitor` (Waveshare ESP32-S3 Touch LCD 7B).
-4. Le contrôleur démarre en **AP+STA** (`SSID: terrarium-s3`, `PASS: terrarium123`) + serveur **HTTP**. Le panel peut se connecter en STA (NVS) ou via l’AP contrôleur.
+4. Le contrôleur démarre en **AP+STA** (`SSID: terrarium-s3`, `PASS: terrarium123`) + serveur **HTTPS** (certificat auto-signé). Le panel peut se connecter en STA (NVS) ou via l’AP contrôleur.
 5. Interface web/panel → sliders CCT/UVA/UVB, UVB pulsé, **capteurs**, **mute alarmes**, **calibration UVI**, **régulation climatique**.
 6. **Câblage** : I²C maître (SDA=8, SCL=9), dôme esclave @ **0x3A**, **INT** OD (GPIO1), **interlock capot** (GPIO17 dôme, actif bas).
 7. **Interlock** : ouvrir le capot coupe les **UV** < 100 ms (soft) + thermostat **hard** (85–90 °C) **en série** CH1–CH4.
@@ -64,6 +64,7 @@
 
 - `docs/climate_control.md` : machine d’états, profils jour/nuit, hystérésis et tâches FreeRTOS pour la régulation climatique.
 - `docs/validation_plan.md` : protocoles de tests sécurité UV, capteurs, endurance, régulation climatique.
+- `docs/hardware_validation.md` : recommandations CEM/burn-in + plan de qualification laboratoire.
 - `firmware/panel/README.md` : instructions spécifiques au panel LVGL (Waveshare ESP32-S3 Touch LCD 7B).
 
 ---
@@ -93,7 +94,7 @@
 - **Écran** : 7” 1024×600 RGB, double buffer LVGL (PSRAM) + VSYNC 10 ms.
 - **Tactile** : GT911 (I²C) avec calibration logicielle.
 - **Wi‑Fi STA** : configuration SSID/mot de passe via interface LVGL (persisté NVS, reboot requis).
-- **Client REST** : `/api/status`, `/api/light/dome0`, `/api/calibrate/uvb`, `/api/alarms/mute`, `/api/climate`.
+- **Client REST** : `/api/status`, `/api/light/dome0`, `/api/calibrate/uvb`, `/api/alarms/mute`, `/api/species`, `/api/ota/*`.
 - **Sûreté** : watchdog réseau, bannière d’erreur si API indisponible, feedback visuel sur interlocks UV.
 
 ---
