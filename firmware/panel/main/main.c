@@ -30,6 +30,7 @@ void app_main(void)
     if (cfg_err != ESP_OK && cfg_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(TAG, "Chargement configuration échoué: %s", esp_err_to_name(cfg_err));
     }
+    app_config_load(&config);
 
     ESP_ERROR_CHECK(display_driver_init());
     ESP_ERROR_CHECK(ui_init(&config));

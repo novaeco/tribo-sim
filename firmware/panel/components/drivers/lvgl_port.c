@@ -109,6 +109,7 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t panel_handle)
         ESP_LOGE(TAG, "Failed to allocate draw buffers");
         err = ESP_ERR_NO_MEM;
         goto cleanup;
+        return ESP_ERR_NO_MEM;
     }
 
     lv_disp_draw_buf_init(&s_draw_buf, s_buf1, s_buf2, LVGL_BUFFER_PIXELS);
@@ -132,6 +133,11 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t panel_handle)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Touch init failed: %s", esp_err_to_name(err));
         goto cleanup;
+
+    esp_err_t err = touch_gt911_init(&s_touch);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Touch init failed: %s", esp_err_to_name(err));
+        return err;
     }
 
     esp_timer_create_args_t timer_args = {
@@ -191,4 +197,10 @@ cleanup:
         s_lvgl_mutex = NULL;
     }
     return err;
+    ESP_RETURN_ON_ERROR(err, TAG, "Failed to create LVGL tick timer");
+    ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_tick_timer, 10 * 1000), TAG, "Failed to start LVGL tick timer");
+
+    xTaskCreatePinnedToCore(lvgl_port_task, "lvgl", 4096, NULL, 5, NULL, 1);
+
+    return ESP_OK;
 }

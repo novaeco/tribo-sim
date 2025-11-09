@@ -34,6 +34,7 @@ static lv_indev_t *s_touch_indev;
 static esp_err_t gt911_i2c_read(uint16_t reg, uint8_t *data, size_t len)
 {
     uint8_t reg_buf[2] = { reg >> 8, reg & 0xFF };
+    uint8_t reg_buf[2] = { reg & 0xFF, reg >> 8 };
     esp_err_t err = i2c_master_write_read_device(GT911_I2C_NUM, s_gt911_addr, reg_buf, sizeof(reg_buf), data, len, pdMS_TO_TICKS(100));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "i2c read 0x%04x failed (%s)", reg, esp_err_to_name(err));
@@ -46,6 +47,8 @@ static esp_err_t gt911_i2c_write(uint16_t reg, const uint8_t *data, size_t len)
     uint8_t buf[2 + len];
     buf[0] = reg >> 8;
     buf[1] = reg & 0xFF;
+    buf[0] = reg & 0xFF;
+    buf[1] = reg >> 8;
     memcpy(&buf[2], data, len);
     return i2c_master_write_to_device(GT911_I2C_NUM, s_gt911_addr, buf, sizeof(buf), pdMS_TO_TICKS(100));
 }
@@ -67,6 +70,14 @@ static esp_err_t gt911_hw_reset(void)
     ESP_RETURN_ON_ERROR(gpio_set_level(GT911_RST_PIN, 1), TAG, "RST high failed");
     vTaskDelay(pdMS_TO_TICKS(20));
     ESP_RETURN_ON_ERROR(gpio_set_direction(GT911_INT_PIN, GPIO_MODE_INPUT), TAG, "INT input failed");
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+    gpio_set_level(GT911_INT_PIN, 0);
+    gpio_set_level(GT911_RST_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    gpio_set_level(GT911_RST_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    gpio_set_direction(GT911_INT_PIN, GPIO_MODE_INPUT);
     return ESP_OK;
 }
 
@@ -75,6 +86,7 @@ static esp_err_t gt911_identify_address(void)
     uint8_t buffer[4] = {0};
     const uint8_t addresses[] = {GT911_ADDR1, GT911_ADDR2};
     for (size_t i = 0; i < sizeof(addresses) / sizeof(addresses[0]); ++i) {
+    for (size_t i = 0; i < sizeof(addresses); ++i) {
         s_gt911_addr = addresses[i];
         if (gt911_i2c_read(GT911_PRODUCT_ID_REG, buffer, sizeof(buffer)) == ESP_OK) {
             ESP_LOGI(TAG, "GT911 detected at 0x%02x (ID %02x%02x%02x%02x)", s_gt911_addr, buffer[0], buffer[1], buffer[2], buffer[3]);
@@ -114,6 +126,8 @@ static void gt911_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
             }
             data->point.x = (lv_coord_t)x;
             data->point.y = (lv_coord_t)y;
+            data->point.x = x;
+            data->point.y = y;
             data->state = LV_INDEV_STATE_PRESSED;
         } else {
             data->state = LV_INDEV_STATE_RELEASED;
@@ -130,6 +144,11 @@ esp_err_t touch_gt911_init(lv_disp_t *disp, lv_indev_t **indev_out)
 {
     ESP_RETURN_ON_FALSE(disp != NULL, ESP_ERR_INVALID_ARG, TAG, "Display handle required");
 
+    gt911_i2c_write(GT911_STATUS_REG, &clear, 1);
+}
+
+esp_err_t touch_gt911_init(lv_indev_t **indev_out)
+{
     i2c_config_t conf = {
         .mode = I2C_MODE_MASTER,
         .sda_io_num = GT911_I2C_SDA,
@@ -158,6 +177,12 @@ esp_err_t touch_gt911_init(lv_disp_t *disp, lv_indev_t **indev_out)
         i2c_driver_delete(GT911_I2C_NUM);
         return err;
     }
+    ESP_ERROR_CHECK(i2c_param_config(GT911_I2C_NUM, &conf));
+    ESP_ERROR_CHECK(i2c_driver_install(GT911_I2C_NUM, I2C_MODE_MASTER, 0, 0, 0));
+
+    ESP_ERROR_CHECK(gt911_hw_reset());
+
+    ESP_RETURN_ON_ERROR(gt911_identify_address(), TAG, "Failed to detect GT911");
 
     static lv_indev_drv_t indev_drv;
     lv_indev_drv_init(&indev_drv);
@@ -169,6 +194,7 @@ esp_err_t touch_gt911_init(lv_disp_t *disp, lv_indev_t **indev_out)
         i2c_driver_delete(GT911_I2C_NUM);
         return ESP_ERR_NO_MEM;
     }
+    s_touch_indev = lv_indev_drv_register(&indev_drv);
 
     if (indev_out) {
         *indev_out = s_touch_indev;

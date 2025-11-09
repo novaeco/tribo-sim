@@ -51,6 +51,7 @@ static const esp_lcd_rgb_timing_t panel_timing = {
 };
 
 static esp_err_t init_gpio(void)
+static void init_gpio(void)
 {
     const gpio_config_t bk_config = {
         .pin_bit_mask = BIT64(PIN_NUM_BACKLIGHT) | BIT64(PIN_NUM_DISP_EN),
@@ -63,11 +64,15 @@ static esp_err_t init_gpio(void)
     ESP_RETURN_ON_ERROR(gpio_set_level(PIN_NUM_DISP_EN, 1), TAG, "Failed to enable display");
     ESP_RETURN_ON_ERROR(gpio_set_level(PIN_NUM_BACKLIGHT, 0), TAG, "Failed to set backlight low");
     return ESP_OK;
+    ESP_ERROR_CHECK(gpio_config(&bk_config));
+    gpio_set_level(PIN_NUM_DISP_EN, 1);
+    gpio_set_level(PIN_NUM_BACKLIGHT, 0);
 }
 
 esp_err_t display_driver_init(void)
 {
     ESP_RETURN_ON_ERROR(init_gpio(), TAG, "GPIO init failed");
+    init_gpio();
 
     const int data_pins[16] = {
         PIN_NUM_DATA0, PIN_NUM_DATA1, PIN_NUM_DATA2, PIN_NUM_DATA3,
@@ -108,6 +113,11 @@ esp_err_t display_driver_init(void)
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(panel_handle, true), TAG, "Panel on failed");
 
     ESP_RETURN_ON_ERROR(gpio_set_level(PIN_NUM_BACKLIGHT, 1), TAG, "Backlight on failed");
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+
+    gpio_set_level(PIN_NUM_BACKLIGHT, 1);
 
     err = lvgl_port_init(panel_handle);
     if (err != ESP_OK) {

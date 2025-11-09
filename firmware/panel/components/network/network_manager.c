@@ -110,6 +110,7 @@ esp_err_t network_manager_init(const app_config_t *config)
 
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "Failed to init Wi-Fi");
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
         s_wifi_initialized = true;
     }
 
@@ -140,6 +141,10 @@ esp_err_t network_manager_init(const app_config_t *config)
         s_command_queue = NULL;
         return err;
     }
+    s_command_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(network_command_t));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
 
     wifi_config_t wifi_cfg = {0};
     strlcpy((char *)wifi_cfg.sta.ssid, s_config.ssid, sizeof(wifi_cfg.sta.ssid));
@@ -165,6 +170,12 @@ esp_err_t network_manager_init(const app_config_t *config)
     }
 
     s_network_started = true;
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_connect());
+
+    xTaskCreatePinnedToCore(network_task, "net_task", 8192, NULL, 5, &s_network_task_handle, 0);
     return ESP_OK;
 }
 
@@ -284,6 +295,8 @@ static void network_task(void *arg)
             continue;
         }
 
+    TickType_t last_poll = xTaskGetTickCount();
+    while (1) {
         EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(100));
         if (!(bits & WIFI_CONNECTED_BIT)) {
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -295,6 +308,8 @@ static void network_task(void *arg)
             esp_err_t err = network_fetch_status();
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to fetch status (%s)", esp_err_to_name(err));
+            if (network_fetch_status() != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to fetch status");
             }
             last_poll = now;
         }
@@ -513,6 +528,8 @@ static esp_err_t network_post_calibration_internal(const terrarium_uvb_calibrati
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }
+    cJSON_AddNumberToObject(root, "k", cmd->k);
+    cJSON_AddNumberToObject(root, "uvi_max", cmd->uvi_max);
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!payload) {
@@ -563,6 +580,22 @@ static esp_err_t network_post_light_internal(const terrarium_light_command_t *cm
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }
+    cJSON *cct = cJSON_CreateObject();
+    cJSON_AddNumberToObject(cct, "day", cmd->cct_day);
+    cJSON_AddNumberToObject(cct, "warm", cmd->cct_warm);
+    cJSON_AddItemToObject(root, "cct", cct);
+
+    cJSON *uva = cJSON_CreateObject();
+    cJSON_AddNumberToObject(uva, "set", cmd->uva);
+    cJSON_AddItemToObject(root, "uva", uva);
+
+    cJSON *uvb = cJSON_CreateObject();
+    cJSON_AddNumberToObject(uvb, "set", cmd->uvb);
+    cJSON_AddNumberToObject(uvb, "period_s", cmd->uvb_period_s);
+    cJSON_AddNumberToObject(uvb, "duty_pm", cmd->uvb_duty_pm);
+    cJSON_AddItemToObject(root, "uvb", uvb);
+
+    cJSON_AddNumberToObject(root, "sky", cmd->sky);
 
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -584,6 +617,7 @@ static esp_err_t network_set_alarm_mute_internal(bool mute)
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }
+    cJSON_AddBoolToObject(root, "mute", mute);
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!payload) {

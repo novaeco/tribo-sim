@@ -409,6 +409,7 @@ static void mute_btn_event_cb(lv_event_t *e)
     (void)e;
     esp_err_t err = network_manager_set_alarm_mute(!s_ctx.alarm_muted);
     notify_errorf("Mute alarmes", err);
+    network_manager_set_alarm_mute(!s_ctx.alarm_muted);
 }
 
 static void sky_btn_event_cb(lv_event_t *e)
@@ -437,6 +438,7 @@ static void calibration_fetch_event_cb(lv_event_t *e)
         lv_label_set_text(s_ctx.label_calib_status, "Échec lecture calibration");
     }
     notify_errorf("Lecture calibration", err);
+    network_manager_fetch_calibration();
 }
 
 static void calibration_apply_event_cb(lv_event_t *e)
@@ -454,6 +456,7 @@ static void calibration_apply_event_cb(lv_event_t *e)
         lv_label_set_text(s_ctx.label_calib_status, "Erreur d'envoi calibration");
     }
     notify_errorf("Calibration UVB", err);
+    network_manager_post_calibration(&cmd);
 }
 
 static void settings_save_event_cb(lv_event_t *e)
@@ -471,6 +474,8 @@ static void settings_save_event_cb(lv_event_t *e)
     } else {
         lv_label_set_text(s_ctx.label_calib_status, "Échec de la sauvegarde des paramètres.");
         set_status_banner("Échec sauvegarde paramètres", true);
+    } else {
+        lv_label_set_text(s_ctx.label_calib_status, "Échec de la sauvegarde des paramètres.");
     }
 }
 
@@ -496,6 +501,7 @@ static void network_error_cb(esp_err_t err, const char *message, void *ctx)
 {
     (void)ctx;
     notify_errorf(message ? message : "Erreur réseau", err);
+    ESP_LOGW(TAG, "Network error: %s (%s)", message ? message : "", esp_err_to_name(err));
 }
 
 static void ui_apply_status_async(void *param)
@@ -544,6 +550,7 @@ static void apply_status_to_widgets(const terrarium_status_t *status)
     char status_msg[128];
     snprintf(status_msg, sizeof(status_msg), "Dernière mise à jour: %llu ms", (unsigned long long)status->timestamp_ms);
     set_status_banner_locked(status_msg, false);
+    lv_label_set_text_fmt(s_ctx.label_status_banner, "Dernière mise à jour: %llu ms", (unsigned long long)status->timestamp_ms);
 
     lv_slider_set_value(s_ctx.sliders[SLIDER_CCT_DAY].slider, status->dome.cct_day, LV_ANIM_OFF);
     lv_slider_set_value(s_ctx.sliders[SLIDER_CCT_WARM].slider, status->dome.cct_warm, LV_ANIM_OFF);
@@ -661,5 +668,6 @@ static void send_light_command(void)
     if (err != ESP_OK) {
         notify_errorf("Commande éclairage", err);
     }
+    network_manager_post_light(&cmd);
 }
 
