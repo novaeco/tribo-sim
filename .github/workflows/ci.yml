@@ -1,0 +1,49 @@
+name: Firmware CI
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Check clang-format
+        uses: jidicula/clang-format-action@v4
+        with:
+          clang-format-version: '16'
+          check-path: '.'
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [controller, dome]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+      - name: Build ${{ matrix.target }}
+        working-directory: firmware/${{ matrix.target }}
+        run: pio run
+  build-panel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install ESP-IDF
+        uses: espressif/setup-esp-idf@v1
+        with:
+          version: v5.1
+      - name: Build panel firmware
+        working-directory: firmware/panel
+        run: |
+          idf.py set-target esp32s3
+          idf.py build

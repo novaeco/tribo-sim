@@ -1,35 +1,53 @@
 #include "network_manager.h"
 
-#include <string.h>
-#include <stdlib.h>
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/param.h>
+
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
-#include "esp_event.h"
-#include "esp_log.h"
-#include "esp_wifi.h"
-#include "esp_netif.h"
-#include "esp_http_client.h"
-#include "esp_timer.h"
+#include "freertos/task.h"
 #include "esp_check.h"
-#include "cJSON.h"
+#include "esp_event.h"
+#include "esp_http_client.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_timer.h"
+#include "esp_wifi.h"
 
 #define TAG "net"
 
 #define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
 
-#define NETWORK_QUEUE_LENGTH 10
-#define NETWORK_CMD_TIMEOUT_MS 2000
-#define STATUS_POLL_INTERVAL_MS 2000
+#define NETWORK_QUEUE_LENGTH       12
+#define NETWORK_CMD_TIMEOUT_MS     2000
+#define NETWORK_STATUS_INTERVAL_MS 2000
+#define NETWORK_RECONNECT_MIN_MS   500
+#define NETWORK_RECONNECT_MAX_MS   15000
+#define NETWORK_UPLOAD_CHUNK       2048
+#define NETWORK_MAX_PATH           256
 
 typedef enum {
-    NETWORK_CMD_LIGHT_POST,
+    NETWORK_STATE_STOPPED = 0,
+    NETWORK_STATE_DISCONNECTED,
+    NETWORK_STATE_CONNECTING,
+    NETWORK_STATE_CONNECTED,
+    NETWORK_STATE_ERROR,
+} network_state_t;
+
+typedef enum {
+    NETWORK_CMD_LIGHT_POST = 0,
     NETWORK_CMD_CALIB_GET,
     NETWORK_CMD_CALIB_POST,
     NETWORK_CMD_MUTE_SET,
+    NETWORK_CMD_SPECIES_FETCH,
+    NETWORK_CMD_SPECIES_APPLY,
+    NETWORK_CMD_OTA_CONTROLLER,
+    NETWORK_CMD_OTA_DOME,
 } network_command_type_t;
 
 typedef struct {
@@ -38,66 +56,111 @@ typedef struct {
         terrarium_light_command_t light;
         terrarium_uvb_calibration_command_t calib;
         bool mute;
+        struct {
+            char key[NETWORK_MAX_SPECIES_KEY];
+        } species;
+        struct {
+            char path[NETWORK_MAX_PATH];
+        } ota;
     } payload;
 } network_command_t;
 
-static app_config_t s_config;
-static EventGroupHandle_t s_wifi_event_group;
-static QueueHandle_t s_command_queue;
-static terrarium_status_t s_status;
-static network_status_cb_t s_status_cb;
-static void *s_status_ctx;
-static network_error_cb_t s_error_cb;
-static void *s_error_ctx;
-static TaskHandle_t s_network_task_handle;
-static bool s_wifi_initialized;
-static bool s_network_started;
-static esp_event_handler_instance_t s_wifi_any_id_handle;
-static esp_event_handler_instance_t s_ip_got_ip_handle;
+typedef struct {
+    app_config_t config;
+    bool wifi_initialized;
+    bool started;
+    network_state_t state;
+    EventGroupHandle_t wifi_events;
+    QueueHandle_t command_queue;
+    TaskHandle_t task_handle;
+    esp_event_handler_instance_t wifi_any_handle;
+    esp_event_handler_instance_t ip_got_handle;
+    esp_timer_handle_t reconnect_timer;
+    uint32_t reconnect_backoff_ms;
+    terrarium_status_t status;
+    terrarium_species_catalog_t species;
+    bool species_loaded;
+    network_status_cb_t status_cb;
+    void *status_ctx;
+    network_error_cb_t error_cb;
+    void *error_ctx;
+    network_species_cb_t species_cb;
+    void *species_ctx;
+} network_context_t;
 
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+static network_context_t s_ctx = {0};
+
 static void network_task(void *arg);
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+static void reconnect_timer_cb(void *arg);
+static void network_set_state(network_state_t state);
+static void network_report_error(esp_err_t err, const char *msg);
+static void network_invoke_status_cb(void);
+static void network_invoke_species_cb(void);
 static esp_err_t network_fetch_status(void);
 static esp_err_t network_fetch_calibration_internal(void);
 static esp_err_t network_post_light_internal(const terrarium_light_command_t *cmd);
 static esp_err_t network_post_calibration_internal(const terrarium_uvb_calibration_command_t *cmd);
 static esp_err_t network_set_alarm_mute_internal(bool mute);
-static void network_invoke_status_cb(void);
-static void network_report_error(esp_err_t err, const char *msg);
-
-static esp_err_t http_perform(const char *path, esp_http_client_method_t method, const char *payload, size_t payload_len, char **out_body, int *out_len);
+static esp_err_t network_fetch_species_internal(void);
+static esp_err_t network_apply_species_internal(const char *key);
+static esp_err_t network_upload_ota_internal(const char *endpoint, const char *path);
+static esp_err_t http_perform(const char *path,
+                              esp_http_client_method_t method,
+                              const char *payload,
+                              size_t payload_len,
+                              char **out_body,
+                              int *out_len);
 static void parse_status_json(const char *json, terrarium_status_t *out_status);
-static void parse_env_sensor(cJSON *parent, const char *name, terrarium_env_sensor_t *sensor);
-static void parse_temp_sensor(cJSON *parent, const char *name, terrarium_temp_sensor_t *sensor);
+static esp_err_t parse_species_json(const char *json, terrarium_species_catalog_t *out_catalog);
 
 esp_err_t network_manager_init(const app_config_t *config)
 {
     if (!config) {
         return ESP_ERR_INVALID_ARG;
     }
-
-    if (s_network_started) {
-        bool credentials_changed = (strncmp(s_config.ssid, config->ssid, sizeof(s_config.ssid)) != 0) ||
-                                   (strncmp(s_config.password, config->password, sizeof(s_config.password)) != 0);
-        s_config = *config;
-        if (credentials_changed) {
+    app_config_t new_cfg = *config;
+    if (s_ctx.started) {
+        bool wifi_credentials_changed = (strncmp(s_ctx.config.ssid, new_cfg.ssid, sizeof(new_cfg.ssid)) != 0) ||
+                                        (strncmp(s_ctx.config.password, new_cfg.password, sizeof(new_cfg.password)) != 0);
+        bool host_changed = (strncmp(s_ctx.config.controller_host, new_cfg.controller_host, sizeof(new_cfg.controller_host)) !=
+                             0) ||
+                            (s_ctx.config.controller_port != new_cfg.controller_port) ||
+                            (s_ctx.config.use_tls != new_cfg.use_tls);
+        s_ctx.config = new_cfg;
+        if (host_changed) {
+            s_ctx.species_loaded = false;
+            memset(&s_ctx.species, 0, sizeof(s_ctx.species));
+        }
+        if (wifi_credentials_changed && s_ctx.wifi_initialized) {
             wifi_config_t wifi_cfg = {0};
-            strlcpy((char *)wifi_cfg.sta.ssid, s_config.ssid, sizeof(wifi_cfg.sta.ssid));
-            strlcpy((char *)wifi_cfg.sta.password, s_config.password, sizeof(wifi_cfg.sta.password));
+            strlcpy((char *)wifi_cfg.sta.ssid, new_cfg.ssid, sizeof(wifi_cfg.sta.ssid));
+            strlcpy((char *)wifi_cfg.sta.password, new_cfg.password, sizeof(wifi_cfg.sta.password));
             wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
             wifi_cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
             wifi_cfg.sta.sae_pk_mode = WPA3_SAE_PK_MODE_AUTOMATIC;
-            ESP_RETURN_ON_ERROR(esp_wifi_disconnect(), TAG, "Failed to disconnect before reconfig");
-            ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "Failed to update Wi-Fi config");
-            ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "Failed to reconnect Wi-Fi");
+            ESP_RETURN_ON_ERROR(esp_wifi_disconnect(), TAG, "disconnect before reconfig");
+            ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "update wifi cfg");
+            ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "reconnect wifi");
+            network_set_state(NETWORK_STATE_CONNECTING);
         }
         return ESP_OK;
     }
+    s_ctx.config = new_cfg;
+    return network_manager_start(&s_ctx.config);
+}
 
-    s_config = *config;
-    memset(&s_status, 0, sizeof(s_status));
+esp_err_t network_manager_start(const app_config_t *config)
+{
+    if (!config) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_ctx.config = *config;
+    memset(&s_ctx.status, 0, sizeof(s_ctx.status));
+    memset(&s_ctx.species, 0, sizeof(s_ctx.species));
+    s_ctx.species_loaded = false;
 
-    if (!s_wifi_initialized) {
+    if (!s_ctx.wifi_initialized) {
         esp_err_t err = esp_netif_init();
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
             return err;
@@ -107,107 +170,150 @@ esp_err_t network_manager_init(const app_config_t *config)
             return err;
         }
         esp_netif_create_default_wifi_sta();
-
-        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-        ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "Failed to init Wi-Fi");
-        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-        s_wifi_initialized = true;
+        wifi_init_config_t wifi_init_cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_RETURN_ON_ERROR(esp_wifi_init(&wifi_init_cfg), TAG, "wifi init");
+        s_ctx.wifi_initialized = true;
     }
 
-    s_wifi_event_group = xEventGroupCreate();
-    ESP_RETURN_ON_FALSE(s_wifi_event_group != NULL, ESP_ERR_NO_MEM, TAG, "Failed to create Wi-Fi event group");
-
-    s_command_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(network_command_t));
-    if (!s_command_queue) {
-        vEventGroupDelete(s_wifi_event_group);
-        s_wifi_event_group = NULL;
-        return ESP_ERR_NO_MEM;
+    if (!s_ctx.wifi_events) {
+        s_ctx.wifi_events = xEventGroupCreate();
+        if (!s_ctx.wifi_events) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (!s_ctx.command_queue) {
+        s_ctx.command_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(network_command_t));
+        if (!s_ctx.command_queue) {
+            vEventGroupDelete(s_ctx.wifi_events);
+            s_ctx.wifi_events = NULL;
+            return ESP_ERR_NO_MEM;
+        }
     }
 
-    esp_err_t err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &s_wifi_any_id_handle);
-    if (err != ESP_OK) {
-        vEventGroupDelete(s_wifi_event_group);
-        s_wifi_event_group = NULL;
-        vQueueDelete(s_command_queue);
-        s_command_queue = NULL;
-        return err;
-    }
-    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &s_ip_got_ip_handle);
-    if (err != ESP_OK) {
-        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_any_id_handle);
-        vEventGroupDelete(s_wifi_event_group);
-        s_wifi_event_group = NULL;
-        vQueueDelete(s_command_queue);
-        s_command_queue = NULL;
-        return err;
-    }
-    s_command_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(network_command_t));
-
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+    ESP_RETURN_ON_ERROR(
+        esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &s_ctx.wifi_any_handle), TAG,
+        "wifi handler");
+    ESP_RETURN_ON_ERROR(
+        esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &s_ctx.ip_got_handle), TAG,
+        "ip handler");
 
     wifi_config_t wifi_cfg = {0};
-    strlcpy((char *)wifi_cfg.sta.ssid, s_config.ssid, sizeof(wifi_cfg.sta.ssid));
-    strlcpy((char *)wifi_cfg.sta.password, s_config.password, sizeof(wifi_cfg.sta.password));
+    strlcpy((char *)wifi_cfg.sta.ssid, config->ssid, sizeof(wifi_cfg.sta.ssid));
+    strlcpy((char *)wifi_cfg.sta.password, config->password, sizeof(wifi_cfg.sta.password));
     wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     wifi_cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
     wifi_cfg.sta.sae_pk_mode = WPA3_SAE_PK_MODE_AUTOMATIC;
 
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "Failed to set Wi-Fi mode");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "Failed to set Wi-Fi config");
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Failed to start Wi-Fi");
-    ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "Failed to connect Wi-Fi");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "set mode");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "set wifi config");
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
+    ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "wifi connect");
 
-    BaseType_t task_ok = xTaskCreatePinnedToCore(network_task, "net_task", 8192, NULL, 5, &s_network_task_handle, 0);
-    if (task_ok != pdPASS) {
-        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_got_ip_handle);
-        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_any_id_handle);
-        vEventGroupDelete(s_wifi_event_group);
-        s_wifi_event_group = NULL;
-        vQueueDelete(s_command_queue);
-        s_command_queue = NULL;
-        return ESP_ERR_NO_MEM;
+    if (!s_ctx.reconnect_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = &reconnect_timer_cb,
+            .arg = NULL,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "net_reconnect",
+        };
+        ESP_RETURN_ON_ERROR(esp_timer_create(&args, &s_ctx.reconnect_timer), TAG, "reconnect timer");
     }
 
-    s_network_started = true;
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
-    ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(esp_wifi_connect());
+    if (!s_ctx.task_handle) {
+        BaseType_t ok = xTaskCreatePinnedToCore(network_task, "net_task", 8192, NULL, 5, &s_ctx.task_handle, 0);
+        if (ok != pdPASS) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
-    xTaskCreatePinnedToCore(network_task, "net_task", 8192, NULL, 5, &s_network_task_handle, 0);
+    s_ctx.started = true;
+    s_ctx.reconnect_backoff_ms = NETWORK_RECONNECT_MIN_MS;
+    network_set_state(NETWORK_STATE_CONNECTING);
+    return ESP_OK;
+}
+
+esp_err_t network_manager_stop(void)
+{
+    if (!s_ctx.started) {
+        return ESP_OK;
+    }
+    s_ctx.started = false;
+
+    if (s_ctx.reconnect_timer) {
+        esp_timer_stop(s_ctx.reconnect_timer);
+        esp_timer_delete(s_ctx.reconnect_timer);
+        s_ctx.reconnect_timer = NULL;
+    }
+
+    if (s_ctx.task_handle) {
+        vTaskDelete(s_ctx.task_handle);
+        s_ctx.task_handle = NULL;
+    }
+
+    if (s_ctx.command_queue) {
+        vQueueDelete(s_ctx.command_queue);
+        s_ctx.command_queue = NULL;
+    }
+
+    if (s_ctx.wifi_events) {
+        vEventGroupDelete(s_ctx.wifi_events);
+        s_ctx.wifi_events = NULL;
+    }
+
+    if (s_ctx.wifi_any_handle) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_ctx.wifi_any_handle);
+        s_ctx.wifi_any_handle = NULL;
+    }
+    if (s_ctx.ip_got_handle) {
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ctx.ip_got_handle);
+        s_ctx.ip_got_handle = NULL;
+    }
+
+    if (s_ctx.wifi_initialized) {
+        esp_wifi_disconnect();
+        esp_wifi_stop();
+    }
+
+    memset(&s_ctx.status, 0, sizeof(s_ctx.status));
+    memset(&s_ctx.species, 0, sizeof(s_ctx.species));
+    s_ctx.species_loaded = false;
+    s_ctx.reconnect_backoff_ms = NETWORK_RECONNECT_MIN_MS;
+    network_set_state(NETWORK_STATE_STOPPED);
     return ESP_OK;
 }
 
 esp_err_t network_manager_register_status_callback(network_status_cb_t cb, void *ctx)
 {
-    s_status_cb = cb;
-    s_status_ctx = ctx;
-    if (s_status.valid && s_status_cb) {
-        s_status_cb(&s_status, s_status_ctx);
+    s_ctx.status_cb = cb;
+    s_ctx.status_ctx = ctx;
+    if (cb && s_ctx.status.valid) {
+        cb(&s_ctx.status, ctx);
     }
     return ESP_OK;
 }
 
 void network_manager_register_error_callback(network_error_cb_t cb, void *ctx)
 {
-    s_error_cb = cb;
-    s_error_ctx = ctx;
+    s_ctx.error_cb = cb;
+    s_ctx.error_ctx = ctx;
+}
+
+void network_manager_register_species_callback(network_species_cb_t cb, void *ctx)
+{
+    s_ctx.species_cb = cb;
+    s_ctx.species_ctx = ctx;
+    if (cb && s_ctx.species.count > 0) {
+        cb(&s_ctx.species, ctx);
+    }
 }
 
 esp_err_t network_manager_post_light(const terrarium_light_command_t *cmd)
 {
-    if (!cmd) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (!s_command_queue) {
+    if (!cmd || !s_ctx.command_queue) {
         return ESP_ERR_INVALID_STATE;
     }
-    network_command_t command = {
-        .type = NETWORK_CMD_LIGHT_POST,
-        .payload.light = *cmd,
-    };
-    if (xQueueSend(s_command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
+    network_command_t command = {.type = NETWORK_CMD_LIGHT_POST, .payload.light = *cmd};
+    if (xQueueSend(s_ctx.command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
@@ -215,13 +321,11 @@ esp_err_t network_manager_post_light(const terrarium_light_command_t *cmd)
 
 esp_err_t network_manager_fetch_calibration(void)
 {
-    if (!s_command_queue) {
+    if (!s_ctx.command_queue) {
         return ESP_ERR_INVALID_STATE;
     }
-    network_command_t command = {
-        .type = NETWORK_CMD_CALIB_GET,
-    };
-    if (xQueueSend(s_command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
+    network_command_t command = {.type = NETWORK_CMD_CALIB_GET};
+    if (xQueueSend(s_ctx.command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
@@ -229,17 +333,11 @@ esp_err_t network_manager_fetch_calibration(void)
 
 esp_err_t network_manager_post_calibration(const terrarium_uvb_calibration_command_t *cmd)
 {
-    if (!cmd) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (!s_command_queue) {
+    if (!cmd || !s_ctx.command_queue) {
         return ESP_ERR_INVALID_STATE;
     }
-    network_command_t command = {
-        .type = NETWORK_CMD_CALIB_POST,
-        .payload.calib = *cmd,
-    };
-    if (xQueueSend(s_command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
+    network_command_t command = {.type = NETWORK_CMD_CALIB_POST, .payload.calib = *cmd};
+    if (xQueueSend(s_ctx.command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
@@ -247,75 +345,121 @@ esp_err_t network_manager_post_calibration(const terrarium_uvb_calibration_comma
 
 esp_err_t network_manager_set_alarm_mute(bool mute)
 {
-    if (!s_command_queue) {
+    if (!s_ctx.command_queue) {
         return ESP_ERR_INVALID_STATE;
     }
-    network_command_t command = {
-        .type = NETWORK_CMD_MUTE_SET,
-        .payload.mute = mute,
-    };
-    if (xQueueSend(s_command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
+    network_command_t command = {.type = NETWORK_CMD_MUTE_SET, .payload.mute = mute};
+    if (xQueueSend(s_ctx.command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
 }
 
-const terrarium_status_t *network_manager_get_cached_status(void)
+esp_err_t network_manager_request_species_catalog(void)
 {
-    return s_status.valid ? &s_status : NULL;
+    if (!s_ctx.command_queue) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    network_command_t command = {.type = NETWORK_CMD_SPECIES_FETCH};
+    if (xQueueSend(s_ctx.command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
 }
 
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+esp_err_t network_manager_apply_species(const char *key)
 {
-    (void)arg;
-    if (!s_wifi_event_group) {
+    if (!key || key[0] == '\0' || !s_ctx.command_queue) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    network_command_t command = {.type = NETWORK_CMD_SPECIES_APPLY};
+    strlcpy(command.payload.species.key, key, sizeof(command.payload.species.key));
+    if (xQueueSend(s_ctx.command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t enqueue_ota_command(network_command_type_t type, const char *path)
+{
+    if (!path || !s_ctx.command_queue) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    network_command_t command = {.type = type};
+    strlcpy(command.payload.ota.path, path, sizeof(command.payload.ota.path));
+    if (xQueueSend(s_ctx.command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
+esp_err_t network_manager_upload_controller_ota(const char *path)
+{
+    return enqueue_ota_command(NETWORK_CMD_OTA_CONTROLLER, path);
+}
+
+esp_err_t network_manager_upload_dome_ota(const char *path)
+{
+    return enqueue_ota_command(NETWORK_CMD_OTA_DOME, path);
+}
+
+const terrarium_status_t *network_manager_get_cached_status(void)
+{
+    return s_ctx.status.valid ? &s_ctx.status : NULL;
+}
+
+const terrarium_species_catalog_t *network_manager_get_cached_species(void)
+{
+    return (s_ctx.species.count > 0) ? &s_ctx.species : NULL;
+}
+
+void network_manager_prepare_http_client_config(const app_config_t *cfg,
+                                                const char *path,
+                                                esp_http_client_method_t method,
+                                                network_http_response_buffer_t *resp,
+                                                esp_http_client_config_t *out)
+{
+    if (!cfg || !path || !out) {
         return;
     }
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        esp_wifi_connect();
-        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-        xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-        ESP_LOGW(TAG, "Wi-Fi disconnected, retrying...");
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    memset(out, 0, sizeof(*out));
+    out->host = cfg->controller_host;
+    out->path = path;
+    out->port = cfg->controller_port;
+    out->disable_auto_redirect = false;
+    out->user_data = resp;
+    out->event_handler = network_http_event_handler_cb;
+    out->timeout_ms = 5000;
+    out->method = method;
+    out->transport_type = cfg->use_tls ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
+    if (cfg->use_tls) {
+        out->cert_pem = PANEL_CONTROLLER_ROOT_CA_PEM;
     }
 }
 
 static void network_task(void *arg)
 {
     (void)arg;
-    TickType_t last_poll = xTaskGetTickCount() - pdMS_TO_TICKS(STATUS_POLL_INTERVAL_MS);
-    while (1) {
-        if (!s_wifi_event_group) {
-            vTaskDelay(pdMS_TO_TICKS(500));
-            continue;
-        }
-
     TickType_t last_poll = xTaskGetTickCount();
     while (1) {
-        EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(100));
+        EventBits_t bits = xEventGroupWaitBits(s_ctx.wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(200));
         if (!(bits & WIFI_CONNECTED_BIT)) {
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
 
         const TickType_t now = xTaskGetTickCount();
-        if (pdTICKS_TO_MS(now - last_poll) >= STATUS_POLL_INTERVAL_MS) {
-            esp_err_t err = network_fetch_status();
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to fetch status (%s)", esp_err_to_name(err));
-            if (network_fetch_status() != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to fetch status");
+        if (pdTICKS_TO_MS(now - last_poll) >= NETWORK_STATUS_INTERVAL_MS) {
+            if (network_fetch_status() == ESP_OK && !s_ctx.species_loaded) {
+                if (network_fetch_species_internal() == ESP_OK) {
+                    s_ctx.species_loaded = true;
+                }
             }
             last_poll = now;
         }
 
         network_command_t command;
-        if (xQueueReceive(s_command_queue, &command, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (xQueueReceive(s_ctx.command_queue, &command, pdMS_TO_TICKS(100)) == pdTRUE) {
             esp_err_t err = ESP_OK;
             switch (command.type) {
             case NETWORK_CMD_LIGHT_POST:
@@ -330,110 +474,143 @@ static void network_task(void *arg)
             case NETWORK_CMD_MUTE_SET:
                 err = network_set_alarm_mute_internal(command.payload.mute);
                 break;
+            case NETWORK_CMD_SPECIES_FETCH:
+                err = network_fetch_species_internal();
+                break;
+            case NETWORK_CMD_SPECIES_APPLY:
+                err = network_apply_species_internal(command.payload.species.key);
+                if (err == ESP_OK) {
+                    network_fetch_status();
+                }
+                break;
+            case NETWORK_CMD_OTA_CONTROLLER:
+                err = network_upload_ota_internal("/api/ota/controller", command.payload.ota.path);
+                break;
+            case NETWORK_CMD_OTA_DOME:
+                err = network_upload_ota_internal("/api/ota/dome", command.payload.ota.path);
+                break;
             default:
                 break;
             }
             if (err != ESP_OK) {
-                network_report_error(err, "Command failed");
-            } else if (command.type == NETWORK_CMD_LIGHT_POST || command.type == NETWORK_CMD_MUTE_SET) {
-                network_fetch_status();
+                network_report_error(err, "command failed");
             }
         }
+    }
+}
+
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    (void)arg;
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        network_set_state(NETWORK_STATE_CONNECTING);
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        xEventGroupClearBits(s_ctx.wifi_events, WIFI_CONNECTED_BIT);
+        network_set_state(NETWORK_STATE_DISCONNECTED);
+        if (s_ctx.reconnect_timer) {
+            uint64_t timeout = s_ctx.reconnect_backoff_ms * 1000ULL;
+            esp_timer_stop(s_ctx.reconnect_timer);
+            esp_timer_start_once(s_ctx.reconnect_timer, timeout);
+            s_ctx.reconnect_backoff_ms = MIN(s_ctx.reconnect_backoff_ms * 2, NETWORK_RECONNECT_MAX_MS);
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        xEventGroupSetBits(s_ctx.wifi_events, WIFI_CONNECTED_BIT);
+        s_ctx.reconnect_backoff_ms = NETWORK_RECONNECT_MIN_MS;
+        if (s_ctx.reconnect_timer) {
+            esp_timer_stop(s_ctx.reconnect_timer);
+        }
+        network_set_state(NETWORK_STATE_CONNECTED);
+    }
+}
+
+static void reconnect_timer_cb(void *arg)
+{
+    (void)arg;
+    ESP_LOGW(TAG, "Reconnecting Wi-Fi");
+    network_set_state(NETWORK_STATE_CONNECTING);
+    esp_wifi_connect();
+}
+
+static void network_set_state(network_state_t state)
+{
+    if (s_ctx.state == state) {
+        return;
+    }
+    s_ctx.state = state;
+    switch (state) {
+    case NETWORK_STATE_STOPPED:
+        ESP_LOGI(TAG, "state=STOPPED");
+        break;
+    case NETWORK_STATE_DISCONNECTED:
+        ESP_LOGW(TAG, "state=DISCONNECTED");
+        break;
+    case NETWORK_STATE_CONNECTING:
+        ESP_LOGI(TAG, "state=CONNECTING");
+        break;
+    case NETWORK_STATE_CONNECTED:
+        ESP_LOGI(TAG, "state=CONNECTED");
+        break;
+    case NETWORK_STATE_ERROR:
+        ESP_LOGE(TAG, "state=ERROR");
+        break;
     }
 }
 
 static void network_report_error(esp_err_t err, const char *msg)
 {
-    if (s_error_cb) {
-        s_error_cb(err, msg, s_error_ctx);
+    network_set_state(NETWORK_STATE_ERROR);
+    if (s_ctx.error_cb) {
+        s_ctx.error_cb(err, msg, s_ctx.error_ctx);
     }
 }
 
 static void network_invoke_status_cb(void)
 {
-    if (s_status_cb) {
-        s_status_cb(&s_status, s_status_ctx);
+    if (s_ctx.status_cb && s_ctx.status.valid) {
+        s_ctx.status_cb(&s_ctx.status, s_ctx.status_ctx);
     }
 }
 
-typedef struct {
-    char *buffer;
-    int length;
-    int capacity;
-} http_resp_buf_t;
-
-static esp_err_t http_event_handler_cb(esp_http_client_event_t *evt)
+static void network_invoke_species_cb(void)
 {
-    http_resp_buf_t *resp = (http_resp_buf_t *)evt->user_data;
-    switch (evt->event_id) {
-    case HTTP_EVENT_ON_DATA:
-        if (!evt->data || evt->data_len <= 0) {
-            break;
-        }
-        if (!resp->buffer) {
-            resp->capacity = evt->data_len + 1;
-            resp->buffer = malloc(resp->capacity);
-            if (!resp->buffer) {
-                return ESP_ERR_NO_MEM;
-            }
-            resp->length = 0;
-        }
-        if (resp->length + evt->data_len + 1 > resp->capacity) {
-            resp->capacity = resp->length + evt->data_len + 1;
-            char *new_buf = realloc(resp->buffer, resp->capacity);
-            if (!new_buf) {
-                free(resp->buffer);
-                resp->buffer = NULL;
-                return ESP_ERR_NO_MEM;
-            }
-            resp->buffer = new_buf;
-        }
-        memcpy(resp->buffer + resp->length, evt->data, evt->data_len);
-        resp->length += evt->data_len;
-        resp->buffer[resp->length] = '\0';
-        break;
-    default:
-        break;
+    if (s_ctx.species_cb && s_ctx.species.count > 0) {
+        s_ctx.species_cb(&s_ctx.species, s_ctx.species_ctx);
     }
-    return ESP_OK;
 }
 
-static esp_err_t http_perform(const char *path, esp_http_client_method_t method, const char *payload, size_t payload_len, char **out_body, int *out_len)
+static esp_err_t http_perform(const char *path,
+                              esp_http_client_method_t method,
+                              const char *payload,
+                              size_t payload_len,
+                              char **out_body,
+                              int *out_len)
 {
     if (!path) {
         return ESP_ERR_INVALID_ARG;
     }
-    char url[128];
-    const char *scheme = s_config.use_tls ? "https" : "http";
-    snprintf(url, sizeof(url), "%s://%s:%u%s", scheme, s_config.controller_host, s_config.controller_port, path);
+    network_http_response_buffer_t resp = {0};
+    esp_http_client_config_t cfg;
+    network_manager_prepare_http_client_config(&s_ctx.config, path, method, &resp, &cfg);
 
-    http_resp_buf_t resp = {0};
-    esp_http_client_config_t http_cfg = {
-        .url = url,
-        .method = method,
-        .disable_auto_redirect = false,
-        .user_data = &resp,
-        .event_handler = http_event_handler_cb,
-        .timeout_ms = 5000,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
         return ESP_ERR_NO_MEM;
     }
 
-    if (method == HTTP_METHOD_POST) {
+    if (method == HTTP_METHOD_POST || method == HTTP_METHOD_PUT) {
         esp_http_client_set_header(client, "Content-Type", "application/json");
     }
-
     if (payload && payload_len > 0) {
         esp_http_client_set_post_field(client, payload, payload_len);
     }
 
     esp_err_t err = esp_http_client_perform(client);
     if (err == ESP_OK) {
-        int status_code = esp_http_client_get_status_code(client);
-        if (status_code >= 400) {
-            ESP_LOGW(TAG, "HTTP %d for %s", status_code, path);
+        int status = esp_http_client_get_status_code(client);
+        if (status >= 400) {
             err = ESP_FAIL;
         }
     }
@@ -451,12 +628,10 @@ static esp_err_t http_perform(const char *path, esp_http_client_method_t method,
         if (resp.buffer) {
             *out_body = resp.buffer;
         } else {
-            char *empty = malloc(1);
-            if (!empty) {
+            *out_body = calloc(1, 1);
+            if (!*out_body) {
                 return ESP_ERR_NO_MEM;
             }
-            empty[0] = '\0';
-            *out_body = empty;
         }
     } else if (resp.buffer) {
         free(resp.buffer);
@@ -473,13 +648,11 @@ static esp_err_t network_fetch_status(void)
     int len = 0;
     esp_err_t err = http_perform("/api/status", HTTP_METHOD_GET, NULL, 0, &body, &len);
     if (err != ESP_OK) {
-        network_report_error(err, "GET /api/status failed");
         return err;
     }
-    parse_status_json(body, &s_status);
+    parse_status_json(body, &s_ctx.status);
     free(body);
-    if (!s_status.valid) {
-        network_report_error(ESP_FAIL, "Status JSON invalide");
+    if (!s_ctx.status.valid) {
         return ESP_FAIL;
     }
     network_invoke_status_cb();
@@ -492,58 +665,26 @@ static esp_err_t network_fetch_calibration_internal(void)
     int len = 0;
     esp_err_t err = http_perform("/api/calibrate/uvb", HTTP_METHOD_GET, NULL, 0, &body, &len);
     if (err != ESP_OK) {
-        network_report_error(err, "GET /api/calibrate/uvb failed");
         return err;
     }
     cJSON *root = cJSON_Parse(body);
-    free(body);
     if (!root) {
-        network_report_error(ESP_FAIL, "Réponse calibration invalide");
+        free(body);
         return ESP_FAIL;
     }
-    terrarium_uvb_calibration_t calibration = {0};
+    terrarium_uvb_calibration_t *cal = &s_ctx.status.uvb_calibration;
+    memset(cal, 0, sizeof(*cal));
     cJSON *k = cJSON_GetObjectItem(root, "k");
-    cJSON *uvi = cJSON_GetObjectItem(root, "uvi_max");
-    if (cJSON_IsNumber(k) && cJSON_IsNumber(uvi)) {
-        calibration.valid = true;
-        calibration.k = (float)k->valuedouble;
-        calibration.uvi_max = (float)uvi->valuedouble;
+    cJSON *uvi_max = cJSON_GetObjectItem(root, "uvi_max");
+    if (cJSON_IsNumber(k) && cJSON_IsNumber(uvi_max)) {
+        cal->valid = true;
+        cal->k = k->valuedouble;
+        cal->uvi_max = uvi_max->valuedouble;
     }
     cJSON_Delete(root);
-    if (calibration.valid) {
-        s_status.uvb_calibration = calibration;
-        network_invoke_status_cb();
-        return ESP_OK;
-    }
-    return ESP_FAIL;
-}
-
-static esp_err_t network_post_calibration_internal(const terrarium_uvb_calibration_command_t *cmd)
-{
-    cJSON *root = cJSON_CreateObject();
-    if (!root) {
-        return ESP_ERR_NO_MEM;
-    }
-    if (!cJSON_AddNumberToObject(root, "k", cmd->k) || !cJSON_AddNumberToObject(root, "uvi_max", cmd->uvi_max)) {
-        cJSON_Delete(root);
-        return ESP_ERR_NO_MEM;
-    }
-    cJSON_AddNumberToObject(root, "k", cmd->k);
-    cJSON_AddNumberToObject(root, "uvi_max", cmd->uvi_max);
-    char *payload = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!payload) {
-        return ESP_ERR_NO_MEM;
-    }
-    esp_err_t err = http_perform("/api/calibrate/uvb", HTTP_METHOD_POST, payload, strlen(payload), NULL, NULL);
-    free(payload);
-    if (err == ESP_OK) {
-        s_status.uvb_calibration.valid = true;
-        s_status.uvb_calibration.k = cmd->k;
-        s_status.uvb_calibration.uvi_max = cmd->uvi_max;
-        network_invoke_status_cb();
-    }
-    return err;
+    free(body);
+    network_invoke_status_cb();
+    return ESP_OK;
 }
 
 static esp_err_t network_post_light_internal(const terrarium_light_command_t *cmd)
@@ -552,49 +693,21 @@ static esp_err_t network_post_light_internal(const terrarium_light_command_t *cm
     if (!root) {
         return ESP_ERR_NO_MEM;
     }
-
-    cJSON *cct = cJSON_CreateObject();
-    cJSON *uva = cJSON_CreateObject();
-    cJSON *uvb = cJSON_CreateObject();
+    cJSON *cct = cJSON_AddObjectToObject(root, "cct");
+    cJSON *uva = cJSON_AddObjectToObject(root, "uva");
+    cJSON *uvb = cJSON_AddObjectToObject(root, "uvb");
     if (!cct || !uva || !uvb) {
-        if (cct) cJSON_Delete(cct);
-        if (uva) cJSON_Delete(uva);
-        if (uvb) cJSON_Delete(uvb);
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }
-
-    if (!cJSON_AddNumberToObject(cct, "day", cmd->cct_day) ||
-        !cJSON_AddNumberToObject(cct, "warm", cmd->cct_warm) ||
-        !cJSON_AddNumberToObject(uva, "set", cmd->uva) ||
-        !cJSON_AddNumberToObject(uvb, "set", cmd->uvb) ||
-        !cJSON_AddNumberToObject(uvb, "period_s", cmd->uvb_period_s) ||
-        !cJSON_AddNumberToObject(uvb, "duty_pm", cmd->uvb_duty_pm) ||
-        !cJSON_AddItemToObject(root, "cct", cct) ||
-        !cJSON_AddItemToObject(root, "uva", uva) ||
-        !cJSON_AddItemToObject(root, "uvb", uvb) ||
-        !cJSON_AddNumberToObject(root, "sky", cmd->sky)) {
-        cJSON_Delete(cct);
-        cJSON_Delete(uva);
-        cJSON_Delete(uvb);
-        cJSON_Delete(root);
-        return ESP_ERR_NO_MEM;
-    }
-    cJSON *cct = cJSON_CreateObject();
     cJSON_AddNumberToObject(cct, "day", cmd->cct_day);
     cJSON_AddNumberToObject(cct, "warm", cmd->cct_warm);
-    cJSON_AddItemToObject(root, "cct", cct);
-
-    cJSON *uva = cJSON_CreateObject();
-    cJSON_AddNumberToObject(uva, "set", cmd->uva);
-    cJSON_AddItemToObject(root, "uva", uva);
-
-    cJSON *uvb = cJSON_CreateObject();
-    cJSON_AddNumberToObject(uvb, "set", cmd->uvb);
+    cJSON_AddNumberToObject(uva, "set", cmd->uva_set);
+    cJSON_AddNumberToObject(uva, "clamp", cmd->uva_clamp);
+    cJSON_AddNumberToObject(uvb, "set", cmd->uvb_set);
+    cJSON_AddNumberToObject(uvb, "clamp", cmd->uvb_clamp);
     cJSON_AddNumberToObject(uvb, "period_s", cmd->uvb_period_s);
     cJSON_AddNumberToObject(uvb, "duty_pm", cmd->uvb_duty_pm);
-    cJSON_AddItemToObject(root, "uvb", uvb);
-
     cJSON_AddNumberToObject(root, "sky", cmd->sky);
 
     char *payload = cJSON_PrintUnformatted(root);
@@ -607,14 +720,28 @@ static esp_err_t network_post_light_internal(const terrarium_light_command_t *cm
     return err;
 }
 
-static esp_err_t network_set_alarm_mute_internal(bool mute)
+static esp_err_t network_post_calibration_internal(const terrarium_uvb_calibration_command_t *cmd)
 {
     cJSON *root = cJSON_CreateObject();
     if (!root) {
         return ESP_ERR_NO_MEM;
     }
-    if (!cJSON_AddBoolToObject(root, "mute", mute)) {
-        cJSON_Delete(root);
+    cJSON_AddNumberToObject(root, "k", cmd->k);
+    cJSON_AddNumberToObject(root, "uvi_max", cmd->uvi_max);
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!payload) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = http_perform("/api/calibrate/uvb", HTTP_METHOD_POST, payload, strlen(payload), NULL, NULL);
+    free(payload);
+    return err;
+}
+
+static esp_err_t network_set_alarm_mute_internal(bool mute)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
         return ESP_ERR_NO_MEM;
     }
     cJSON_AddBoolToObject(root, "mute", mute);
@@ -626,8 +753,117 @@ static esp_err_t network_set_alarm_mute_internal(bool mute)
     esp_err_t err = http_perform("/api/alarms/mute", HTTP_METHOD_POST, payload, strlen(payload), NULL, NULL);
     free(payload);
     if (err == ESP_OK) {
-        s_status.dome.alarm_muted = mute;
+        s_ctx.status.alarm_muted = mute;
         network_invoke_status_cb();
+    }
+    return err;
+}
+
+static esp_err_t network_fetch_species_internal(void)
+{
+    char *body = NULL;
+    int len = 0;
+    esp_err_t err = http_perform("/api/species", HTTP_METHOD_GET, NULL, 0, &body, &len);
+    if (err != ESP_OK) {
+        return err;
+    }
+    terrarium_species_catalog_t catalog = {0};
+    err = parse_species_json(body, &catalog);
+    free(body);
+    if (err != ESP_OK) {
+        return err;
+    }
+    s_ctx.species = catalog;
+    network_invoke_species_cb();
+    return ESP_OK;
+}
+
+static esp_err_t network_apply_species_internal(const char *key)
+{
+    if (!key) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddStringToObject(root, "key", key);
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!payload) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = http_perform("/api/species/apply", HTTP_METHOD_POST, payload, strlen(payload), NULL, NULL);
+    free(payload);
+    if (err == ESP_OK) {
+        strlcpy(s_ctx.species.active_key, key, sizeof(s_ctx.species.active_key));
+        network_invoke_species_cb();
+    }
+    return err;
+}
+
+static esp_err_t network_upload_ota_internal(const char *endpoint, const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        ESP_LOGE(TAG, "Failed to open %s: errno=%d", path, errno);
+        return ESP_FAIL;
+    }
+    esp_http_client_config_t cfg;
+    network_manager_prepare_http_client_config(&s_ctx.config, endpoint, HTTP_METHOD_POST, NULL, &cfg);
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        fclose(f);
+        return ESP_ERR_NO_MEM;
+    }
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        fclose(f);
+        return err;
+    }
+    uint8_t *buffer = malloc(NETWORK_UPLOAD_CHUNK);
+    if (!buffer) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        fclose(f);
+        return ESP_ERR_NO_MEM;
+    }
+    size_t total = 0;
+    while (1) {
+        size_t read = fread(buffer, 1, NETWORK_UPLOAD_CHUNK, f);
+        if (read > 0) {
+            int written = esp_http_client_write(client, (const char *)buffer, read);
+            if (written < 0) {
+                err = ESP_FAIL;
+                break;
+            }
+            total += written;
+        }
+        if (read < NETWORK_UPLOAD_CHUNK) {
+            if (feof(f)) {
+                break;
+            }
+            if (ferror(f)) {
+                err = ESP_FAIL;
+                break;
+            }
+        }
+    }
+    free(buffer);
+    fclose(f);
+    if (err == ESP_OK) {
+        esp_http_client_fetch_headers(client);
+        int status = esp_http_client_get_status_code(client);
+        if (status >= 400) {
+            err = ESP_FAIL;
+        }
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Uploaded %s (%zu bytes)", endpoint, total);
     }
     return err;
 }
@@ -637,75 +873,160 @@ static void parse_status_json(const char *json, terrarium_status_t *out_status)
     if (!json || !out_status) {
         return;
     }
-
     cJSON *root = cJSON_Parse(json);
     if (!root) {
         out_status->valid = false;
         return;
     }
-
     memset(out_status, 0, sizeof(*out_status));
     out_status->timestamp_ms = esp_timer_get_time() / 1000ULL;
 
-    cJSON *sensors = cJSON_GetObjectItem(root, "sensors");
-    if (cJSON_IsObject(sensors)) {
-        parse_env_sensor(sensors, "sht31", &out_status->sensors.sht31);
-        parse_env_sensor(sensors, "sht21", &out_status->sensors.sht21);
-        parse_env_sensor(sensors, "bme280", &out_status->sensors.bme280);
-        parse_temp_sensor(sensors, "ds18b20", &out_status->sensors.ds18b20);
-        parse_env_sensor(sensors, "ambient", &out_status->sensors.ambient);
+    cJSON *summary = cJSON_GetObjectItem(root, "summary");
+    if (cJSON_IsString(summary) && summary->valuestring) {
+        strlcpy(out_status->summary, summary->valuestring, sizeof(out_status->summary));
+    }
+
+    cJSON *env = cJSON_GetObjectItem(root, "env");
+    if (cJSON_IsObject(env)) {
+        cJSON *t = cJSON_GetObjectItem(env, "temperature");
+        cJSON *h = cJSON_GetObjectItem(env, "humidity");
+        cJSON *p = cJSON_GetObjectItem(env, "pressure");
+        cJSON *u = cJSON_GetObjectItem(env, "uvi");
+        out_status->env.valid = true;
+        if (cJSON_IsNumber(t)) {
+            out_status->env.temperature_c = t->valuedouble;
+        }
+        if (cJSON_IsNumber(h)) {
+            out_status->env.humidity_percent = h->valuedouble;
+        }
+        if (cJSON_IsNumber(p)) {
+            out_status->env.pressure_hpa = p->valuedouble;
+        }
+        if (cJSON_IsNumber(u)) {
+            out_status->env.uvi = u->valuedouble;
+        }
+    }
+
+    cJSON *light = cJSON_GetObjectItem(root, "light");
+    if (cJSON_IsObject(light)) {
+        out_status->light.valid = true;
+        cJSON *cct = cJSON_GetObjectItem(light, "cct");
+        if (cJSON_IsObject(cct)) {
+            cJSON *day = cJSON_GetObjectItem(cct, "day");
+            cJSON *warm = cJSON_GetObjectItem(cct, "warm");
+            if (cJSON_IsNumber(day)) {
+                out_status->light.cct_day = day->valuedouble;
+            }
+            if (cJSON_IsNumber(warm)) {
+                out_status->light.cct_warm = warm->valuedouble;
+            }
+        }
+        cJSON *uva = cJSON_GetObjectItem(light, "uva");
+        if (cJSON_IsObject(uva)) {
+            cJSON *set = cJSON_GetObjectItem(uva, "set");
+            cJSON *clamp = cJSON_GetObjectItem(uva, "clamp");
+            if (cJSON_IsNumber(set)) {
+                out_status->light.uva_set = set->valuedouble;
+            }
+            if (cJSON_IsNumber(clamp)) {
+                out_status->light.uva_clamp = clamp->valuedouble;
+            }
+        }
+        cJSON *uvb = cJSON_GetObjectItem(light, "uvb");
+        if (cJSON_IsObject(uvb)) {
+            cJSON *set = cJSON_GetObjectItem(uvb, "set");
+            cJSON *clamp = cJSON_GetObjectItem(uvb, "clamp");
+            cJSON *period = cJSON_GetObjectItem(uvb, "period_s");
+            cJSON *duty = cJSON_GetObjectItem(uvb, "duty_pm");
+            if (cJSON_IsNumber(set)) {
+                out_status->light.uvb_set = set->valuedouble;
+            }
+            if (cJSON_IsNumber(clamp)) {
+                out_status->light.uvb_clamp = clamp->valuedouble;
+            }
+            if (cJSON_IsNumber(period)) {
+                out_status->light.uvb_period_s = period->valuedouble;
+            }
+            if (cJSON_IsNumber(duty)) {
+                out_status->light.uvb_duty_pm = duty->valuedouble;
+            }
+        }
+        cJSON *sky = cJSON_GetObjectItem(light, "sky");
+        if (cJSON_IsNumber(sky)) {
+            out_status->light.sky_mode = sky->valuedouble;
+        }
+        cJSON *fan = cJSON_GetObjectItem(light, "fan_pwm");
+        if (cJSON_IsNumber(fan)) {
+            out_status->light.fan_pwm_percent = fan->valuedouble;
+        }
     }
 
     cJSON *dome = cJSON_GetObjectItem(root, "dome");
     if (cJSON_IsObject(dome)) {
         out_status->dome.valid = true;
         cJSON *status = cJSON_GetObjectItem(dome, "status");
-        cJSON *interlock = cJSON_GetObjectItem(dome, "interlock");
-        cJSON *therm_hard = cJSON_GetObjectItem(dome, "therm_hard");
-        cJSON *bus_loss = cJSON_GetObjectItem(dome, "bus_loss");
-        cJSON *alarm_mute = cJSON_GetObjectItem(dome, "alarm_muted");
-        out_status->dome.status = cJSON_IsTrue(status);
-        out_status->dome.interlock = cJSON_IsTrue(interlock);
-        out_status->dome.therm_hard = cJSON_IsTrue(therm_hard);
-        out_status->dome.bus_loss = cJSON_IsTrue(bus_loss);
-        out_status->dome.alarm_muted = cJSON_IsTrue(alarm_mute);
+        cJSON *flags = cJSON_GetObjectItem(dome, "flags");
+        cJSON *heatsink = cJSON_GetObjectItem(dome, "heatsink_c");
+        cJSON *uvi = cJSON_GetObjectItem(dome, "uvi");
+        if (cJSON_IsNumber(status)) {
+            out_status->dome.status = status->valueint;
+        }
+        if (cJSON_IsNumber(flags)) {
+            out_status->dome.flags = flags->valueint;
+        }
+        if (cJSON_IsNumber(heatsink)) {
+            out_status->dome.heatsink_c = heatsink->valuedouble;
+        }
+        if (cJSON_IsNumber(uvi)) {
+            out_status->dome.uvi = uvi->valuedouble;
+        }
+    }
 
-        cJSON *cct = cJSON_GetObjectItem(dome, "cct");
-        if (cJSON_IsObject(cct)) {
-            cJSON *day = cJSON_GetObjectItem(cct, "day");
-            cJSON *warm = cJSON_GetObjectItem(cct, "warm");
-            if (cJSON_IsNumber(day)) {
-                out_status->dome.cct_day = (uint16_t)day->valuedouble;
-            }
-            if (cJSON_IsNumber(warm)) {
-                out_status->dome.cct_warm = (uint16_t)warm->valuedouble;
-            }
+    cJSON *climate = cJSON_GetObjectItem(root, "climate");
+    if (cJSON_IsObject(climate)) {
+        out_status->climate.valid = true;
+        cJSON *heater = cJSON_GetObjectItem(climate, "heater_on");
+        cJSON *lights_on = cJSON_GetObjectItem(climate, "lights_on");
+        cJSON *fail_safe = cJSON_GetObjectItem(climate, "fail_safe_active");
+        cJSON *temp_sp = cJSON_GetObjectItem(climate, "temp_setpoint");
+        cJSON *hum_sp = cJSON_GetObjectItem(climate, "humidity_setpoint");
+        cJSON *uvi_target = cJSON_GetObjectItem(climate, "uvi_target");
+        if (cJSON_IsBool(heater)) {
+            out_status->climate.heater_on = cJSON_IsTrue(heater);
         }
-        cJSON *uva = cJSON_GetObjectItem(dome, "uva");
-        if (cJSON_IsObject(uva)) {
-            cJSON *set = cJSON_GetObjectItem(uva, "set");
-            if (cJSON_IsNumber(set)) {
-                out_status->dome.uva_set = (uint16_t)set->valuedouble;
-            }
+        if (cJSON_IsBool(lights_on)) {
+            out_status->climate.lights_on = cJSON_IsTrue(lights_on);
         }
-        cJSON *uvb = cJSON_GetObjectItem(dome, "uvb");
-        if (cJSON_IsObject(uvb)) {
-            cJSON *set = cJSON_GetObjectItem(uvb, "set");
-            cJSON *period = cJSON_GetObjectItem(uvb, "period_s");
-            cJSON *duty = cJSON_GetObjectItem(uvb, "duty_pm");
-            if (cJSON_IsNumber(set)) {
-                out_status->dome.uvb_set = (uint16_t)set->valuedouble;
-            }
-            if (cJSON_IsNumber(period)) {
-                out_status->dome.uvb_period_s = (uint16_t)period->valuedouble;
-            }
-            if (cJSON_IsNumber(duty)) {
-                out_status->dome.uvb_duty_pm = (uint16_t)duty->valuedouble;
-            }
+        if (cJSON_IsBool(fail_safe)) {
+            out_status->climate.fail_safe_active = cJSON_IsTrue(fail_safe);
         }
-        cJSON *sky = cJSON_GetObjectItem(dome, "sky");
-        if (cJSON_IsNumber(sky)) {
-            out_status->dome.sky_mode = (uint8_t)sky->valuedouble;
+        if (cJSON_IsNumber(temp_sp)) {
+            out_status->climate.temp_setpoint_c = temp_sp->valuedouble;
+        }
+        if (cJSON_IsNumber(hum_sp)) {
+            out_status->climate.humidity_setpoint_pct = hum_sp->valuedouble;
+        }
+        if (cJSON_IsNumber(uvi_target)) {
+            out_status->climate.uvi_target = uvi_target->valuedouble;
+        }
+    }
+
+    cJSON *alarms = cJSON_GetObjectItem(root, "alarms");
+    if (cJSON_IsObject(alarms)) {
+        cJSON *muted = cJSON_GetObjectItem(alarms, "muted");
+        if (cJSON_IsBool(muted)) {
+            out_status->alarm_muted = cJSON_IsTrue(muted);
+        }
+    }
+
+    cJSON *calibration = cJSON_GetObjectItem(root, "calibration");
+    if (cJSON_IsObject(calibration)) {
+        cJSON *k = cJSON_GetObjectItem(calibration, "k");
+        cJSON *uvi_max = cJSON_GetObjectItem(calibration, "uvi_max");
+        if (cJSON_IsNumber(k) && cJSON_IsNumber(uvi_max)) {
+            out_status->uvb_calibration.valid = true;
+            out_status->uvb_calibration.k = k->valuedouble;
+            out_status->uvb_calibration.uvi_max = uvi_max->valuedouble;
         }
     }
 
@@ -713,47 +1034,73 @@ static void parse_status_json(const char *json, terrarium_status_t *out_status)
     cJSON_Delete(root);
 }
 
-static void parse_env_sensor(cJSON *parent, const char *name, terrarium_env_sensor_t *sensor)
+static esp_err_t parse_species_json(const char *json, terrarium_species_catalog_t *out_catalog)
 {
-    if (!sensor) {
-        return;
+    if (!json || !out_catalog) {
+        return ESP_ERR_INVALID_ARG;
     }
-    memset(sensor, 0, sizeof(*sensor));
-    if (!parent || !name) {
-        return;
+    cJSON *root = cJSON_Parse(json);
+    if (!root) {
+        return ESP_ERR_INVALID_ARG;
     }
-    cJSON *node = cJSON_GetObjectItem(parent, name);
-    if (!cJSON_IsObject(node)) {
-        return;
+    memset(out_catalog, 0, sizeof(*out_catalog));
+    size_t index = 0;
+    cJSON *builtin = cJSON_GetObjectItem(root, "builtin");
+    if (cJSON_IsArray(builtin)) {
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, builtin)
+        {
+            if (index >= NETWORK_SPECIES_MAX_ENTRIES) {
+                break;
+            }
+            cJSON *key = cJSON_GetObjectItem(item, "key");
+            cJSON *labels = cJSON_GetObjectItem(item, "labels");
+            if (!cJSON_IsString(key) || !cJSON_IsObject(labels)) {
+                continue;
+            }
+            terrarium_species_entry_t *entry = &out_catalog->entries[index++];
+            strlcpy(entry->key, key->valuestring, sizeof(entry->key));
+            cJSON *fr = cJSON_GetObjectItem(labels, "fr");
+            cJSON *en = cJSON_GetObjectItem(labels, "en");
+            cJSON *es = cJSON_GetObjectItem(labels, "es");
+            if (cJSON_IsString(fr)) {
+                strlcpy(entry->label_fr, fr->valuestring, sizeof(entry->label_fr));
+            }
+            if (cJSON_IsString(en)) {
+                strlcpy(entry->label_en, en->valuestring, sizeof(entry->label_en));
+            }
+            if (cJSON_IsString(es)) {
+                strlcpy(entry->label_es, es->valuestring, sizeof(entry->label_es));
+            }
+            entry->custom = false;
+        }
     }
-    cJSON *temp = cJSON_GetObjectItem(node, "temperature_c");
-    cJSON *humid = cJSON_GetObjectItem(node, "humidity_percent");
-    if (cJSON_IsNumber(temp)) {
-        sensor->temperature_c = (float)temp->valuedouble;
-        sensor->valid = true;
+    cJSON *custom = cJSON_GetObjectItem(root, "custom");
+    if (cJSON_IsArray(custom)) {
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, custom)
+        {
+            if (index >= NETWORK_SPECIES_MAX_ENTRIES) {
+                break;
+            }
+            cJSON *key = cJSON_GetObjectItem(item, "key");
+            cJSON *name = cJSON_GetObjectItem(item, "name");
+            if (!cJSON_IsString(key) || !cJSON_IsString(name)) {
+                continue;
+            }
+            terrarium_species_entry_t *entry = &out_catalog->entries[index++];
+            strlcpy(entry->key, key->valuestring, sizeof(entry->key));
+            strlcpy(entry->label_fr, name->valuestring, sizeof(entry->label_fr));
+            strlcpy(entry->label_en, name->valuestring, sizeof(entry->label_en));
+            strlcpy(entry->label_es, name->valuestring, sizeof(entry->label_es));
+            entry->custom = true;
+        }
     }
-    if (cJSON_IsNumber(humid)) {
-        sensor->humidity_percent = (float)humid->valuedouble;
-        sensor->valid = true;
+    out_catalog->count = index;
+    cJSON *active = cJSON_GetObjectItem(root, "active_key");
+    if (cJSON_IsString(active)) {
+        strlcpy(out_catalog->active_key, active->valuestring, sizeof(out_catalog->active_key));
     }
-}
-
-static void parse_temp_sensor(cJSON *parent, const char *name, terrarium_temp_sensor_t *sensor)
-{
-    if (!sensor) {
-        return;
-    }
-    memset(sensor, 0, sizeof(*sensor));
-    if (!parent || !name) {
-        return;
-    }
-    cJSON *node = cJSON_GetObjectItem(parent, name);
-    if (!cJSON_IsObject(node)) {
-        return;
-    }
-    cJSON *temp = cJSON_GetObjectItem(node, "temperature_c");
-    if (cJSON_IsNumber(temp)) {
-        sensor->temperature_c = (float)temp->valuedouble;
-        sensor->valid = true;
-    }
+    cJSON_Delete(root);
+    return ESP_OK;
 }

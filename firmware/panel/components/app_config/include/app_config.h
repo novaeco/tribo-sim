@@ -14,8 +14,10 @@ extern "C" {
 #define APP_CONFIG_DEFAULT_SSID        "terrarium-s3"
 #define APP_CONFIG_DEFAULT_PASSWORD    "terrarium123"
 #define APP_CONFIG_DEFAULT_HOST        "192.168.4.1"
-#define APP_CONFIG_DEFAULT_PORT        80
-#define APP_CONFIG_DEFAULT_USE_TLS     false
+#define APP_CONFIG_DEFAULT_PORT        443
+#define APP_CONFIG_DEFAULT_USE_TLS     true
+#define APP_CONFIG_DEFAULT_LANGUAGE    "fr"
+#define APP_CONFIG_DEFAULT_SPECIES_KEY "builtin:pogona_vitticeps"
 
 #define APP_CONFIG_MAX_SSID_LEN        32
 #define APP_CONFIG_MAX_PASSWORD_LEN    64
@@ -27,6 +29,8 @@ typedef struct {
     char controller_host[APP_CONFIG_MAX_HOST_LEN + 1];
     uint16_t controller_port;
     bool use_tls;
+    char language[3];
+    char species_key[48];
 } app_config_t;
 
 void app_config_get_defaults(app_config_t *cfg);
