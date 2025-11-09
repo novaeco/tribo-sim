@@ -21,6 +21,19 @@
 
 ---
 
+## Préparation de l’environnement de développement
+
+1. **Système** : Python ≥ 3.10, Git, CMake ≥ 3.24, Ninja, toolchains `xtensa-esp32s3-elf` (installées via l’ESP-IDF). Installer les drivers USB-JTAG (CP210x, FTDI ou CH9102) adaptés à votre OS.
+2. **PlatformIO Core** : `pipx install platformio` (ou `pip install platformio`). Vérifier avec `pio --version` (≥ 6.1 recommandé) puis initialiser les environnements en ouvrant les dossiers `firmware/controller` et `firmware/dome`.
+3. **ESP-IDF v5.1+** : cloner `https://github.com/espressif/esp-idf`, exécuter `install.sh esp32s3` puis `source export.sh`. Contrôler avec `idf.py --version`.
+4. **Extensions VSCode** : *PlatformIO IDE* + *Espressif IDF*. Associer l’interpréteur Python exporté par l’IDF pour disposer de l’autocomplétion et des tasks intégrées.
+5. **LVGL assets** : dans `firmware/panel`, lancer `idf.py reconfigure` après l’installation pour résoudre les dépendances `idf_component.yml` (LVGL 9 + drivers GT911).
+6. **Linux udev** : ajouter `/etc/udev/rules.d/99-esp32.rules` avec `SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", MODE="0666"` puis `sudo udevadm control --reload-rules && sudo udevadm trigger`.
+
+> 💡 **Astuce** : créez un environnement Python virtuel (`python -m venv .venv && source .venv/bin/activate`) pour isoler PlatformIO et les paquets d’outillage (requests, click, etc.).
+
+---
+
 ## Arborescence
 
 ```
@@ -121,6 +134,27 @@ idf.py set-target esp32s3
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
+
+---
+
+## Tests & Validation logicielle
+
+- **Lint PlatformIO** : `pio check -e s3-wroom2-idf` dans `firmware/controller` et `firmware/dome` (cppcheck + clang-tidy configurés dans `platformio.ini`).
+- **Unit tests ESP-IDF** : `idf.py build -T test_http_config && idf.py flash -T test_http_config` dans `firmware/panel` pour exécuter la campagne Unity.
+- **Analyse statique** : `idf.py clang-check` (nécessite `clangd` et l’extension ESP-IDF) afin de détecter les dérives de pointeurs ou d’API.
+- **CI locale** : `act -j build` reproduit le workflow GitHub Actions `.github/workflows/build.yml` (installer `act` via Homebrew ou `go install github.com/nektos/act`).
+
+> 🛡️ **Sécurité** : lors des tests automatisés, limiter la puissance UV via un banc d’alimentation avec courant plafonné et installer des écrans absorbants (EN/IEC 62471).
+
+---
+
+## Outils & Scripts
+
+- `tools/burn_in.py` : cycle automatique burn-in (2 profils lumineux, API REST). Exemple : `python tools/burn_in.py --host https://terrarium-s3.local --cycles 48 --period 600`.
+- `docs/validation_plan.md` : trame des essais fonctionnels/sûreté (UV, thermique, I²C). Adapter les seuils aux espèces visées et consigner les résultats (signature opérateur + date).
+- `docs/hardware_validation.md` : préparation CEM, burn-in thermique et checklist laboratoire (ISO/IEC 17025).
+
+> 📊 Exportez les journaux API (`/api/status`) vers CSV/InfluxDB pour tracer les dérives UVI, T° dissipateur et vérifier la marge avant déclenchement thermostat hard.
 
 ---
 
