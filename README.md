@@ -1,9 +1,9 @@
 
-# Terrarium S3 — Contrôleur + Dôme (v0.3.3)
+# Terrarium S3 — Contrôleur + Dôme + Panel (v0.4.0)
 
-**MCU (x2)** : ESP32‑S3‑WROOM‑2‑**N32R16V** (OPI Flash 32 MB + OPI PSRAM 16 MB)  
-**Framework** : ESP‑IDF (via PlatformIO) — USB‑CDC, Dual‑OTA, Wi‑Fi AP/STA, HTTP API, I²C maître/esclave  
-**Scope** : Contrôleur terrarium (climat, schedules, API) + Dôme lumineux 24 V (CH1/CH2 CCT, CH3 **UVA**, CH4 **UVB**, **WS2812 Sky/Star**), sécurité photobiologique, interlocks, calibration UVI.
+**MCU (x3)** : ESP32‑S3‑WROOM‑2‑**N32R16V** (OPI Flash 32 MB + OPI PSRAM 16 MB)
+**Frameworks** : ESP‑IDF (PlatformIO pour contrôleur/dôme, ESP‑IDF pur pour panel) — USB‑CDC, Dual‑OTA, Wi‑Fi AP/STA, HTTP API, I²C maître/esclave, LVGL v9
+**Scope** : Contrôleur terrarium (climat, schedules, API) + Dôme lumineux 24 V (CH1/CH2 CCT, CH3 **UVA**, CH4 **UVB**, **WS2812 Sky/Star**), sécurité photobiologique, interlocks, calibration UVI, **panel tactile 7” LVGL** (contrôle local + calibration).
 
 > ⚠️ **Sécurité UV** : L’UVB est **biologiquement actif**. Respecter EN/IEC 62471, distances/temps d’exposition, capotage, **interlock capot**, et **thermostat hard 85–90 °C** en série LED. Ne jamais regarder les LED UV à l’œil nu.
 
@@ -11,12 +11,13 @@
 
 ## TL;DR (Quickstart)
 
-1. **Ouvrir** `firmware/controller` dans VSCode + PlatformIO → build + flash (board `esp32-s3-devkitc-1`).  
-2. **Ouvrir** `firmware/dome` → build + flash (même board).  
-3. Le contrôleur démarre en **AP+STA** (`SSID: terrarium-s3`, `PASS: terrarium123`) + serveur **HTTP**.  
-4. Naviguer vers `http://<ip_du_controleur>/` → sliders CCT/UVA/UVB, UVB pulsé, **capteurs**, **calibration UVI**, **mute alarmes**.  
-5. **Câblage** : I²C maître (SDA=8, SCL=9), dôme esclave @ **0x3A**, **INT** OD (GPIO1), **interlock capot** (GPIO17 dôme, actif bas).  
-6. **Interlock** : ouvrir le capot coupe les **UV** < 100 ms (soft) + thermostat **hard** (85–90 °C) **en série** CH1–CH4.
+1. **Contrôleur** : ouvrir `firmware/controller` dans VSCode + PlatformIO → build + flash (`board = esp32-s3-devkitc-1`).
+2. **Dôme** : ouvrir `firmware/dome` → build + flash (même board).
+3. **Panel tactile** : `cd firmware/panel` → `idf.py set-target esp32s3 && idf.py build flash monitor` (Waveshare ESP32-S3 Touch LCD 7B).
+4. Le contrôleur démarre en **AP+STA** (`SSID: terrarium-s3`, `PASS: terrarium123`) + serveur **HTTP**. Le panel peut se connecter en STA (NVS) ou via l’AP contrôleur.
+5. Interface web/panel → sliders CCT/UVA/UVB, UVB pulsé, **capteurs**, **mute alarmes**, **calibration UVI**, **régulation climatique**.
+6. **Câblage** : I²C maître (SDA=8, SCL=9), dôme esclave @ **0x3A**, **INT** OD (GPIO1), **interlock capot** (GPIO17 dôme, actif bas).
+7. **Interlock** : ouvrir le capot coupe les **UV** < 100 ms (soft) + thermostat **hard** (85–90 °C) **en série** CH1–CH4.
 
 ---
 
@@ -34,7 +35,7 @@
       drivers/ (i2c_bus.c, tca9548a.c, pcf8574.c, ds3231.c,
                 ssr.c, fans.c, dome_i2c.c, dome_bus.c,
                 onewire.c, sht31.c, sht21.c, bme280.c,
-                sensors.c, calib.c, alarms.c)
+                sensors.c, calib.c, alarms.c, climate.c)
       net/ (wifi.c, httpd.c)
   /dome
     platformio.ini
@@ -45,9 +46,25 @@
       include/{config.h, regs.h}
       drivers/ (i2c_slave_if.c, ledc_cc.c, ws2812_rmt.c,
                 fan_pwm.c, ntc_adc.c)
+  /panel
+    CMakeLists.txt
+    sdkconfig.defaults
+    partitions.csv
+    idf_component.yml (LVGL v9)
+    /components (drivers/, network/, ui/, app_config/)
+    /main (app_main.c, wifi_task.c, ui_task.c)
 /docs
+  climate_control.md
   validation_plan.md
 ```
+
+---
+
+## Documentation
+
+- `docs/climate_control.md` : machine d’états, profils jour/nuit, hystérésis et tâches FreeRTOS pour la régulation climatique.
+- `docs/validation_plan.md` : protocoles de tests sécurité UV, capteurs, endurance, régulation climatique.
+- `firmware/panel/README.md` : instructions spécifiques au panel LVGL (Waveshare ESP32-S3 Touch LCD 7B).
 
 ---
 
@@ -72,13 +89,20 @@
 - **INT** OD vers contrôleur (GPIO1).  
 - **Fenêtres UV** : **quartz** pour UVB ; verre trempé dépoli pour voie visible.
 
+### Panel tactile (ESP32-S3 Touch LCD 7B)
+- **Écran** : 7” 1024×600 RGB, double buffer LVGL (PSRAM) + VSYNC 10 ms.
+- **Tactile** : GT911 (I²C) avec calibration logicielle.
+- **Wi‑Fi STA** : configuration SSID/mot de passe via interface LVGL (persisté NVS, reboot requis).
+- **Client REST** : `/api/status`, `/api/light/dome0`, `/api/calibrate/uvb`, `/api/alarms/mute`, `/api/climate`.
+- **Sûreté** : watchdog réseau, bannière d’erreur si API indisponible, feedback visuel sur interlocks UV.
+
 ---
 
 ## Build & Flash
 
-- Prérequis : VSCode + **PlatformIO**.  
-- Carte : `esp32-s3-devkitc-1`.  
-- `sdkconfig.defaults` : OPI Flash/PSRAM @80 MHz activés, USB‑CDC, Dual‑OTA.  
+- Prérequis : VSCode + **PlatformIO**.
+- Carte : `esp32-s3-devkitc-1`.
+- `sdkconfig.defaults` : OPI Flash/PSRAM @80 MHz activés, USB‑CDC, Dual‑OTA.
 - Partitions (`partitions.csv`) : `factory + ota_0 + ota_1 + nvs + spiffs`.
 
 ```bash
@@ -89,6 +113,12 @@ pio run -t upload -e s3-wroom2-idf
 # Dôme
 cd ../dome
 pio run -t upload -e s3-wroom2-idf
+
+# Panel tactile (ESP-IDF v5.1+)
+cd ../panel
+idf.py set-target esp32s3
+idf.py build
+idf.py -p /dev/ttyACM0 flash monitor
 ```
 
 ---
@@ -103,7 +133,7 @@ pio run -t upload -e s3-wroom2-idf
 
 ## API HTTP (REST)
 
-### `/api/light/dome0`  
+### `/api/light/dome0`
 - **GET** → état du dôme (CCT, UVA/UVB, pulsé, sky, `status`).  
 - **POST** body JSON :
 
@@ -148,10 +178,25 @@ Retourne un JSON agrégé **capteurs + dôme** :
   - `k = UVI / duty_pm` (modèle linéaire), stocké en **NVS** (`namespace "calib"`).  
   - `uvi_max` (clamp cible) stocké également.
 
-### `/api/alarms/mute`  
-- **GET** → `{"muted": true|false}` (état persistant NVS).  
-- **POST** → `{"muted": true|false}`.  
+### `/api/alarms/mute`
+- **GET** → `{"muted": true|false}` (état persistant NVS).
+- **POST** → `{"muted": true|false}`.
 - **Réarmement physique** : appui long **> 2 s** sur le bouton → **unmute** + clear **BUS_LOSS** (3 bips d’ack).
+
+### `/api/climate`
+- **GET** → `{ "schedule": {...}, "state": {...}, "measurement": {...} }`.
+- **POST** → met à jour le `climate_schedule_t` (plages jour/nuit, consignes T/RH, cibles UVI). Validation stricte (bornes dans `drivers/climate.c`).
+- Les dérives et états SSR/FAN sont aussi exposés dans `/api/status.climate` pour supervision rapide.
+
+---
+
+## Régulation climatique (contrôleur)
+
+- `drivers/climate.c` gère un `climate_schedule_t` persistant (NVS `namespace "climate"`) avec profils jour/nuit (consignes T/RH, hystérésis, UVI max).
+- `climate_tick()` pilote SSR chauffage, ventilateurs PWM et clamp UVB en fonction des mesures `terra_sensors_t` et de l’heure RTC (`ds3231`).
+- `climate_measurement_t` capture dérives et tendances ; accès thread-safe via `climate_measurement_mutex()`.
+- `/api/climate` valide les consignes (bornes contrôlées) puis les sérialise en JSON NVS ; reboot inutile.
+- En mode dégradé (BUS I²C perdu, capteur absent), SSR chauffage est forcé OFF et les alarmes sont propagées à l’UI et au panel.
 
 ---
 
@@ -189,6 +234,7 @@ Retourne un JSON agrégé **capteurs + dôme** :
 - **DS18B20** (1‑Wire, bus1/bus2 indépendants).  
 - **SHT31** (`0x44`) et **SHT21/HTU21** (`0x40`). Les deux peuvent coexister ; champs séparés dans `/api/status`.  
 - **BME280** (`0x76`) — implémentation de lecture **simplifiée** (T/RH/Pression).
+- **GT911** (panel tactile) — contrôlé via `components/drivers/touch_gt911`.
 
 ---
 
@@ -199,6 +245,7 @@ Retourne un JSON agrégé **capteurs + dôme** :
 - **OT soft 75 °C** : fade UV→OFF, `STATUS.OT`.  
 - **BUS_LOSS watchdog** (contrôleur ↔ dôme) : mode **dégradé** après > 5 erreurs I²C ; **auto‑reset** après ≥ 3 lectures OK ; **buzzer** pattern dédié ; exposé dans `/api/status`.  
 - **Mute alarmes** persistant (NVS) + **réarmement** bouton (> 2 s).
+- **Régulation climatique** : si `dome_bus_is_degraded()` ou capteurs absents, SSR chauffage passe OFF et le panel affiche l’alarme.
 
 ---
 
@@ -214,7 +261,7 @@ Retourne un JSON agrégé **capteurs + dôme** :
 
 ## CI/CD
 
-- **GitHub Actions** : build `controller` + `dome`, publication des **.bin**.  
+- **GitHub Actions** : build `controller`, `dome` **et panel** (artefacts `.bin` + `.uf2`).
 - Workflow : `.github/workflows/build.yml`.
 
 ---
@@ -229,10 +276,11 @@ Retourne un JSON agrégé **capteurs + dôme** :
 
 ## Roadmap (suggestions)
 
-- LUT UVI (non‑linéarités), profils espèces (UVI/photopériodes).  
-- Mode RTC offline + schedules en NVS.  
-- Web UI : presets, graphiques temps réel, OTA via UI.  
+- LUT UVI (non‑linéarités), profils espèces (UVI/photopériodes).
+- Mode RTC offline + schedules en NVS.
+- Web UI : presets, graphiques temps réel, OTA via UI.
 - CEM : blindage, plans de masse soignés, tests normatifs.
+- Panel : multi-profils d’affichage, mode dégradé offline.
 
 ---
 
@@ -244,8 +292,9 @@ Retourne un JSON agrégé **capteurs + dôme** :
 
 ## Changelog
 
-- **v0.3.3** : Mute alarmes (NVS), API `/api/alarms/mute`, **long‑press** bouton → clear BUS_LOSS + unmute.  
-- **v0.3.2** : Buzzer patterns, watchdog BUS_LOSS refactor, capteurs explicités.  
+- **v0.4.0** : Panel LVGL ESP32‑S3 (LVGL 9, GT911, client REST), régulation climatique complète (`/api/climate`, NVS), documentation climatisation & validation mise à jour, CI étendue au panel.
+- **v0.3.3** : Mute alarmes (NVS), API `/api/alarms/mute`, **long‑press** bouton → clear BUS_LOSS + unmute.
+- **v0.3.2** : Buzzer patterns, watchdog BUS_LOSS refactor, capteurs explicités.
 - **v0.3.1** : SHT21/SHT21, `/api/status` enrichi, wrappers I²C avec mode dégradé.  
 - **v0.3.0** : Interlock capot < 100 ms, `/api/status`, calibration UVI (NVS), TCA routing, sécurité dôme.  
 - **v0.2** : API `/api/light/dome0`, UI sliders, UVB pulsé, WS2812 RMT, capteurs basiques.  
