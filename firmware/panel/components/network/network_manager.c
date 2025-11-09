@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -50,6 +51,9 @@ static network_error_cb_t s_error_cb;
 static void *s_error_ctx;
 static TaskHandle_t s_network_task_handle;
 static bool s_wifi_initialized;
+static bool s_network_started;
+static esp_event_handler_instance_t s_wifi_any_id_handle;
+static esp_event_handler_instance_t s_ip_got_ip_handle;
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void network_task(void *arg);
@@ -72,6 +76,24 @@ esp_err_t network_manager_init(const app_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
 
+    if (s_network_started) {
+        bool credentials_changed = (strncmp(s_config.ssid, config->ssid, sizeof(s_config.ssid)) != 0) ||
+                                   (strncmp(s_config.password, config->password, sizeof(s_config.password)) != 0);
+        s_config = *config;
+        if (credentials_changed) {
+            wifi_config_t wifi_cfg = {0};
+            strlcpy((char *)wifi_cfg.sta.ssid, s_config.ssid, sizeof(wifi_cfg.sta.ssid));
+            strlcpy((char *)wifi_cfg.sta.password, s_config.password, sizeof(wifi_cfg.sta.password));
+            wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+            wifi_cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+            wifi_cfg.sta.sae_pk_mode = WPA3_SAE_PK_MODE_AUTOMATIC;
+            ESP_RETURN_ON_ERROR(esp_wifi_disconnect(), TAG, "Failed to disconnect before reconfig");
+            ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "Failed to update Wi-Fi config");
+            ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "Failed to reconnect Wi-Fi");
+        }
+        return ESP_OK;
+    }
+
     s_config = *config;
     memset(&s_status, 0, sizeof(s_status));
 
@@ -87,11 +109,38 @@ esp_err_t network_manager_init(const app_config_t *config)
         esp_netif_create_default_wifi_sta();
 
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "Failed to init Wi-Fi");
         ESP_ERROR_CHECK(esp_wifi_init(&cfg));
         s_wifi_initialized = true;
     }
 
     s_wifi_event_group = xEventGroupCreate();
+    ESP_RETURN_ON_FALSE(s_wifi_event_group != NULL, ESP_ERR_NO_MEM, TAG, "Failed to create Wi-Fi event group");
+
+    s_command_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(network_command_t));
+    if (!s_command_queue) {
+        vEventGroupDelete(s_wifi_event_group);
+        s_wifi_event_group = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &s_wifi_any_id_handle);
+    if (err != ESP_OK) {
+        vEventGroupDelete(s_wifi_event_group);
+        s_wifi_event_group = NULL;
+        vQueueDelete(s_command_queue);
+        s_command_queue = NULL;
+        return err;
+    }
+    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &s_ip_got_ip_handle);
+    if (err != ESP_OK) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_any_id_handle);
+        vEventGroupDelete(s_wifi_event_group);
+        s_wifi_event_group = NULL;
+        vQueueDelete(s_command_queue);
+        s_command_queue = NULL;
+        return err;
+    }
     s_command_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(network_command_t));
 
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
@@ -104,6 +153,23 @@ esp_err_t network_manager_init(const app_config_t *config)
     wifi_cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
     wifi_cfg.sta.sae_pk_mode = WPA3_SAE_PK_MODE_AUTOMATIC;
 
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "Failed to set Wi-Fi mode");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "Failed to set Wi-Fi config");
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Failed to start Wi-Fi");
+    ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "Failed to connect Wi-Fi");
+
+    BaseType_t task_ok = xTaskCreatePinnedToCore(network_task, "net_task", 8192, NULL, 5, &s_network_task_handle, 0);
+    if (task_ok != pdPASS) {
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_got_ip_handle);
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_any_id_handle);
+        vEventGroupDelete(s_wifi_event_group);
+        s_wifi_event_group = NULL;
+        vQueueDelete(s_command_queue);
+        s_command_queue = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_network_started = true;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -134,6 +200,9 @@ esp_err_t network_manager_post_light(const terrarium_light_command_t *cmd)
     if (!cmd) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!s_command_queue) {
+        return ESP_ERR_INVALID_STATE;
+    }
     network_command_t command = {
         .type = NETWORK_CMD_LIGHT_POST,
         .payload.light = *cmd,
@@ -146,6 +215,9 @@ esp_err_t network_manager_post_light(const terrarium_light_command_t *cmd)
 
 esp_err_t network_manager_fetch_calibration(void)
 {
+    if (!s_command_queue) {
+        return ESP_ERR_INVALID_STATE;
+    }
     network_command_t command = {
         .type = NETWORK_CMD_CALIB_GET,
     };
@@ -160,6 +232,9 @@ esp_err_t network_manager_post_calibration(const terrarium_uvb_calibration_comma
     if (!cmd) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!s_command_queue) {
+        return ESP_ERR_INVALID_STATE;
+    }
     network_command_t command = {
         .type = NETWORK_CMD_CALIB_POST,
         .payload.calib = *cmd,
@@ -172,6 +247,9 @@ esp_err_t network_manager_post_calibration(const terrarium_uvb_calibration_comma
 
 esp_err_t network_manager_set_alarm_mute(bool mute)
 {
+    if (!s_command_queue) {
+        return ESP_ERR_INVALID_STATE;
+    }
     network_command_t command = {
         .type = NETWORK_CMD_MUTE_SET,
         .payload.mute = mute,
@@ -190,6 +268,9 @@ const terrarium_status_t *network_manager_get_cached_status(void)
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     (void)arg;
+    if (!s_wifi_event_group) {
+        return;
+    }
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -207,6 +288,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 static void network_task(void *arg)
 {
     (void)arg;
+    TickType_t last_poll = xTaskGetTickCount() - pdMS_TO_TICKS(STATUS_POLL_INTERVAL_MS);
+    while (1) {
+        if (!s_wifi_event_group) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
     TickType_t last_poll = xTaskGetTickCount();
     while (1) {
         EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(100));
@@ -217,6 +305,9 @@ static void network_task(void *arg)
 
         const TickType_t now = xTaskGetTickCount();
         if (pdTICKS_TO_MS(now - last_poll) >= STATUS_POLL_INTERVAL_MS) {
+            esp_err_t err = network_fetch_status();
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to fetch status (%s)", esp_err_to_name(err));
             if (network_fetch_status() != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to fetch status");
             }
@@ -388,6 +479,7 @@ static esp_err_t network_fetch_status(void)
     parse_status_json(body, &s_status);
     free(body);
     if (!s_status.valid) {
+        network_report_error(ESP_FAIL, "Status JSON invalide");
         return ESP_FAIL;
     }
     network_invoke_status_cb();
@@ -406,6 +498,7 @@ static esp_err_t network_fetch_calibration_internal(void)
     cJSON *root = cJSON_Parse(body);
     free(body);
     if (!root) {
+        network_report_error(ESP_FAIL, "Réponse calibration invalide");
         return ESP_FAIL;
     }
     terrarium_uvb_calibration_t calibration = {0};
@@ -428,6 +521,13 @@ static esp_err_t network_fetch_calibration_internal(void)
 static esp_err_t network_post_calibration_internal(const terrarium_uvb_calibration_command_t *cmd)
 {
     cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (!cJSON_AddNumberToObject(root, "k", cmd->k) || !cJSON_AddNumberToObject(root, "uvi_max", cmd->uvi_max)) {
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
     cJSON_AddNumberToObject(root, "k", cmd->k);
     cJSON_AddNumberToObject(root, "uvi_max", cmd->uvi_max);
     char *payload = cJSON_PrintUnformatted(root);
@@ -449,6 +549,37 @@ static esp_err_t network_post_calibration_internal(const terrarium_uvb_calibrati
 static esp_err_t network_post_light_internal(const terrarium_light_command_t *cmd)
 {
     cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    cJSON *cct = cJSON_CreateObject();
+    cJSON *uva = cJSON_CreateObject();
+    cJSON *uvb = cJSON_CreateObject();
+    if (!cct || !uva || !uvb) {
+        if (cct) cJSON_Delete(cct);
+        if (uva) cJSON_Delete(uva);
+        if (uvb) cJSON_Delete(uvb);
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (!cJSON_AddNumberToObject(cct, "day", cmd->cct_day) ||
+        !cJSON_AddNumberToObject(cct, "warm", cmd->cct_warm) ||
+        !cJSON_AddNumberToObject(uva, "set", cmd->uva) ||
+        !cJSON_AddNumberToObject(uvb, "set", cmd->uvb) ||
+        !cJSON_AddNumberToObject(uvb, "period_s", cmd->uvb_period_s) ||
+        !cJSON_AddNumberToObject(uvb, "duty_pm", cmd->uvb_duty_pm) ||
+        !cJSON_AddItemToObject(root, "cct", cct) ||
+        !cJSON_AddItemToObject(root, "uva", uva) ||
+        !cJSON_AddItemToObject(root, "uvb", uvb) ||
+        !cJSON_AddNumberToObject(root, "sky", cmd->sky)) {
+        cJSON_Delete(cct);
+        cJSON_Delete(uva);
+        cJSON_Delete(uvb);
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
     cJSON *cct = cJSON_CreateObject();
     cJSON_AddNumberToObject(cct, "day", cmd->cct_day);
     cJSON_AddNumberToObject(cct, "warm", cmd->cct_warm);
@@ -479,6 +610,13 @@ static esp_err_t network_post_light_internal(const terrarium_light_command_t *cm
 static esp_err_t network_set_alarm_mute_internal(bool mute)
 {
     cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (!cJSON_AddBoolToObject(root, "mute", mute)) {
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
     cJSON_AddBoolToObject(root, "mute", mute);
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);

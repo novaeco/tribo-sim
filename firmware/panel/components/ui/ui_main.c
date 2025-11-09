@@ -57,6 +57,11 @@ typedef struct {
     terrarium_status_t last_status;
 } ui_context_t;
 
+typedef struct {
+    bool error;
+    char text[128];
+} status_banner_msg_t;
+
 static ui_context_t s_ctx;
 
 static void slider_event_cb(lv_event_t *e);
@@ -74,6 +79,10 @@ static void update_alarm_button(void);
 static void apply_status_to_widgets(const terrarium_status_t *status);
 static void populate_settings_form(void);
 static void send_light_command(void);
+static void status_banner_async(void *param);
+static void set_status_banner(const char *text, bool error);
+static void set_status_banner_locked(const char *text, bool error);
+static void notify_errorf(const char *prefix, esp_err_t err);
 
 static lv_obj_t *create_sensor_row(lv_obj_t *parent, const char *title, lv_obj_t **value_label);
 static lv_obj_t *create_slider_card(lv_obj_t *parent, const char *title, slider_type_t type, slider_binding_t *binding);
@@ -107,6 +116,7 @@ esp_err_t ui_init(app_config_t *config)
 
     lv_obj_t *status_banner = lv_label_create(tab_control);
     lv_label_set_text(status_banner, "Connexion en cours...");
+    lv_obj_set_style_text_color(status_banner, lv_palette_main(LV_PALETTE_BLUE), 0);
     s_ctx.label_status_banner = status_banner;
 
     lv_obj_t *sensor_card = lv_obj_create(tab_control);
@@ -397,6 +407,8 @@ static void spinbox_event_cb(lv_event_t *e)
 static void mute_btn_event_cb(lv_event_t *e)
 {
     (void)e;
+    esp_err_t err = network_manager_set_alarm_mute(!s_ctx.alarm_muted);
+    notify_errorf("Mute alarmes", err);
     network_manager_set_alarm_mute(!s_ctx.alarm_muted);
 }
 
@@ -419,6 +431,13 @@ static void sky_btn_event_cb(lv_event_t *e)
 static void calibration_fetch_event_cb(lv_event_t *e)
 {
     (void)e;
+    lv_label_set_text(s_ctx.label_calib_status, "Lecture en cours...");
+    set_status_banner("Lecture des coefficients...", false);
+    esp_err_t err = network_manager_fetch_calibration();
+    if (err != ESP_OK) {
+        lv_label_set_text(s_ctx.label_calib_status, "Échec lecture calibration");
+    }
+    notify_errorf("Lecture calibration", err);
     network_manager_fetch_calibration();
 }
 
@@ -429,6 +448,14 @@ static void calibration_apply_event_cb(lv_event_t *e)
         .k = (float)lv_spinbox_get_value(s_ctx.spin_calib_k),
         .uvi_max = (float)lv_spinbox_get_value(s_ctx.spin_calib_uvi),
     };
+    lv_label_set_text(s_ctx.label_calib_status, "Envoi de la calibration...");
+    esp_err_t err = network_manager_post_calibration(&cmd);
+    if (err == ESP_OK) {
+        set_status_banner("Calibration UVB envoyée", false);
+    } else {
+        lv_label_set_text(s_ctx.label_calib_status, "Erreur d'envoi calibration");
+    }
+    notify_errorf("Calibration UVB", err);
     network_manager_post_calibration(&cmd);
 }
 
@@ -443,6 +470,10 @@ static void settings_save_event_cb(lv_event_t *e)
 
     if (app_config_save(s_ctx.config) == ESP_OK) {
         lv_label_set_text(s_ctx.label_calib_status, "Paramètres sauvegardés. Redémarrez pour appliquer.");
+        set_status_banner("Paramètres sauvegardés", false);
+    } else {
+        lv_label_set_text(s_ctx.label_calib_status, "Échec de la sauvegarde des paramètres.");
+        set_status_banner("Échec sauvegarde paramètres", true);
     } else {
         lv_label_set_text(s_ctx.label_calib_status, "Échec de la sauvegarde des paramètres.");
     }
@@ -469,6 +500,7 @@ static void network_status_cb(const terrarium_status_t *status, void *ctx)
 static void network_error_cb(esp_err_t err, const char *message, void *ctx)
 {
     (void)ctx;
+    notify_errorf(message ? message : "Erreur réseau", err);
     ESP_LOGW(TAG, "Network error: %s (%s)", message ? message : "", esp_err_to_name(err));
 }
 
@@ -515,6 +547,9 @@ static void apply_status_to_widgets(const terrarium_status_t *status)
     s_ctx.alarm_muted = status->dome.alarm_muted;
     update_alarm_button();
 
+    char status_msg[128];
+    snprintf(status_msg, sizeof(status_msg), "Dernière mise à jour: %llu ms", (unsigned long long)status->timestamp_ms);
+    set_status_banner_locked(status_msg, false);
     lv_label_set_text_fmt(s_ctx.label_status_banner, "Dernière mise à jour: %llu ms", (unsigned long long)status->timestamp_ms);
 
     lv_slider_set_value(s_ctx.sliders[SLIDER_CCT_DAY].slider, status->dome.cct_day, LV_ANIM_OFF);
@@ -570,6 +605,54 @@ static void populate_settings_form(void)
     }
 }
 
+static void status_banner_async(void *param)
+{
+    status_banner_msg_t *msg = param;
+    if (!msg) {
+        return;
+    }
+    lvgl_port_lock();
+    set_status_banner_locked(msg->text, msg->error);
+    lvgl_port_unlock();
+    lv_free(msg);
+}
+
+static void set_status_banner(const char *text, bool error)
+{
+    if (!s_ctx.label_status_banner || !text) {
+        return;
+    }
+    status_banner_msg_t *msg = lv_malloc(sizeof(status_banner_msg_t));
+    if (!msg) {
+        ESP_LOGW(TAG, "Impossible d'afficher le message de statut");
+        return;
+    }
+    msg->error = error;
+    strlcpy(msg->text, text, sizeof(msg->text));
+    lv_async_call(status_banner_async, msg);
+}
+
+static void set_status_banner_locked(const char *text, bool error)
+{
+    if (!s_ctx.label_status_banner || !text) {
+        return;
+    }
+    lv_obj_set_style_text_color(s_ctx.label_status_banner,
+                                lv_palette_main(error ? LV_PALETTE_RED : LV_PALETTE_BLUE), 0);
+    lv_label_set_text(s_ctx.label_status_banner, text);
+}
+
+static void notify_errorf(const char *prefix, esp_err_t err)
+{
+    if (err == ESP_OK) {
+        return;
+    }
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s (%s)", prefix ? prefix : "Erreur", esp_err_to_name(err));
+    set_status_banner(buf, true);
+    ESP_LOGW(TAG, "%s", buf);
+}
+
 static void send_light_command(void)
 {
     terrarium_light_command_t cmd = {
@@ -581,6 +664,10 @@ static void send_light_command(void)
         .uvb_duty_pm = (uint16_t)lv_spinbox_get_value(s_ctx.spin_uvb_duty),
         .sky = s_ctx.last_status.dome.sky_mode,
     };
+    esp_err_t err = network_manager_post_light(&cmd);
+    if (err != ESP_OK) {
+        notify_errorf("Commande éclairage", err);
+    }
     network_manager_post_light(&cmd);
 }
 

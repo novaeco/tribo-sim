@@ -26,6 +26,10 @@ void app_main(void)
     init_nvs();
 
     app_config_t config;
+    esp_err_t cfg_err = app_config_load(&config);
+    if (cfg_err != ESP_OK && cfg_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Chargement configuration échoué: %s", esp_err_to_name(cfg_err));
+    }
     app_config_load(&config);
 
     ESP_ERROR_CHECK(display_driver_init());

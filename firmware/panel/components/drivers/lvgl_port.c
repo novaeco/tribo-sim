@@ -18,6 +18,7 @@ static esp_lcd_panel_handle_t s_panel_handle;
 static lv_disp_t *s_disp;
 static lv_indev_t *s_touch;
 static esp_timer_handle_t s_tick_timer;
+static TaskHandle_t s_lvgl_task_handle;
 
 #define LVGL_DRAW_BUF_HEIGHT   60
 #define LVGL_BUFFER_PIXELS     (PANEL_H_RES * LVGL_DRAW_BUF_HEIGHT)
@@ -94,6 +95,7 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t panel_handle)
     s_panel_handle = panel_handle;
     lv_init();
 
+    esp_err_t err = ESP_OK;
     s_lvgl_mutex = xSemaphoreCreateRecursiveMutex();
     if (!s_lvgl_mutex) {
         ESP_LOGE(TAG, "Failed to create LVGL mutex");
@@ -105,6 +107,8 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t panel_handle)
     s_buf2 = (lv_color_t *)lvgl_port_malloc(buf_size);
     if (!s_buf1 || !s_buf2) {
         ESP_LOGE(TAG, "Failed to allocate draw buffers");
+        err = ESP_ERR_NO_MEM;
+        goto cleanup;
         return ESP_ERR_NO_MEM;
     }
 
@@ -119,6 +123,16 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t panel_handle)
     disp_drv.color_format = LV_COLOR_FORMAT_NATIVE;
     disp_drv.antialiasing = 1;
     s_disp = lv_disp_drv_register(&disp_drv);
+    if (!s_disp) {
+        err = ESP_ERR_NO_MEM;
+        ESP_LOGE(TAG, "Failed to register LVGL display");
+        goto cleanup;
+    }
+
+    err = touch_gt911_init(s_disp, &s_touch);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Touch init failed: %s", esp_err_to_name(err));
+        goto cleanup;
 
     esp_err_t err = touch_gt911_init(&s_touch);
     if (err != ESP_OK) {
@@ -133,6 +147,56 @@ esp_err_t lvgl_port_init(esp_lcd_panel_handle_t panel_handle)
         .name = "lv_tick"
     };
     err = esp_timer_create(&timer_args, &s_tick_timer);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create LVGL tick timer: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+    err = esp_timer_start_periodic(s_tick_timer, 10 * 1000);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start LVGL tick timer: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+
+    BaseType_t task_ok = xTaskCreatePinnedToCore(lvgl_port_task, "lvgl", 4096, NULL, 5, &s_lvgl_task_handle, 1);
+    if (task_ok != pdPASS) {
+        err = ESP_ERR_NO_MEM;
+        ESP_LOGE(TAG, "Failed to create LVGL task");
+        goto cleanup;
+    }
+
+    return ESP_OK;
+
+cleanup:
+    if (s_lvgl_task_handle) {
+        vTaskDelete(s_lvgl_task_handle);
+        s_lvgl_task_handle = NULL;
+    }
+    if (s_tick_timer) {
+        esp_timer_stop(s_tick_timer);
+        esp_timer_delete(s_tick_timer);
+        s_tick_timer = NULL;
+    }
+    if (s_touch) {
+        lv_indev_delete(s_touch);
+        s_touch = NULL;
+    }
+    if (s_disp) {
+        lv_disp_remove(s_disp);
+        s_disp = NULL;
+    }
+    if (s_buf1) {
+        lvgl_port_free(s_buf1);
+        s_buf1 = NULL;
+    }
+    if (s_buf2) {
+        lvgl_port_free(s_buf2);
+        s_buf2 = NULL;
+    }
+    if (s_lvgl_mutex) {
+        vSemaphoreDelete(s_lvgl_mutex);
+        s_lvgl_mutex = NULL;
+    }
+    return err;
     ESP_RETURN_ON_ERROR(err, TAG, "Failed to create LVGL tick timer");
     ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_tick_timer, 10 * 1000), TAG, "Failed to start LVGL tick timer");
 
