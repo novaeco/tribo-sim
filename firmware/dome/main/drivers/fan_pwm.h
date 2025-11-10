@@ -7,3 +7,5 @@ void fan_init(int pwm_gpio);
 void fan_set_percent(float percent);
 uint16_t fan_get_raw_pwm(void);
 bool fan_is_running(void);
+uint32_t fan_get_error_count(void);
+void     fan_reset_error_count(void);

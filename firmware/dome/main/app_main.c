@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/portmacro.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -33,6 +34,17 @@ static uint8_t regfile[256]; // I2C register space
 static float t_c = 25.0f;
 static volatile bool interlock_tripped = false;
 static volatile uint32_t interlock_count = 0;
+
+#define UV_EVENT_MASK_UVA 0x01u
+#define UV_EVENT_MASK_UVB 0x02u
+
+static uint32_t s_uv_event_history[DOME_DIAG_UV_HISTORY_DEPTH] = {0};
+static uint32_t s_uv_event_total = 0;
+static uint8_t s_uv_event_head = 0;
+static uint8_t s_uv_event_count = 0;
+static bool s_uva_cut_active = false;
+static bool s_uvb_cut_active = false;
+static portMUX_TYPE s_uv_event_lock = portMUX_INITIALIZER_UNLOCKED;
 
 typedef struct {
     esp_ota_handle_t handle;
@@ -132,6 +144,49 @@ static inline void wr32(uint8_t reg, uint32_t value)
     regfile[reg + 1] = (uint8_t)((value >> 8) & 0xFF);
     regfile[reg + 2] = (uint8_t)((value >> 16) & 0xFF);
     regfile[reg + 3] = (uint8_t)((value >> 24) & 0xFF);
+}
+
+static inline uint32_t uv_event_encode(uint8_t channel_mask)
+{
+    uint32_t seconds = (uint32_t)((esp_timer_get_time() / 1000000ULL) & DOME_DIAG_UV_EVENT_TIMESTAMP_MASK);
+    uint32_t encoded = seconds & DOME_DIAG_UV_EVENT_TIMESTAMP_MASK;
+    if (channel_mask & UV_EVENT_MASK_UVA) {
+        encoded |= DOME_DIAG_UV_EVENT_CH_UVA;
+    }
+    if (channel_mask & UV_EVENT_MASK_UVB) {
+        encoded |= DOME_DIAG_UV_EVENT_CH_UVB;
+    }
+    return encoded;
+}
+
+static void uv_history_record(uint8_t channel_mask)
+{
+    if (channel_mask == 0) {
+        return;
+    }
+    uint32_t encoded = uv_event_encode(channel_mask);
+    portENTER_CRITICAL(&s_uv_event_lock);
+    s_uv_event_history[s_uv_event_head] = encoded;
+    s_uv_event_head = (uint8_t)((s_uv_event_head + 1) % DOME_DIAG_UV_HISTORY_DEPTH);
+    if (s_uv_event_count < DOME_DIAG_UV_HISTORY_DEPTH) {
+        ++s_uv_event_count;
+    }
+    if (s_uv_event_total != UINT32_MAX) {
+        ++s_uv_event_total;
+    }
+    portEXIT_CRITICAL(&s_uv_event_lock);
+}
+
+static void uv_history_reset(void)
+{
+    portENTER_CRITICAL(&s_uv_event_lock);
+    memset(s_uv_event_history, 0, sizeof(s_uv_event_history));
+    s_uv_event_head = 0;
+    s_uv_event_count = 0;
+    s_uv_event_total = 0;
+    s_uva_cut_active = false;
+    s_uvb_cut_active = false;
+    portEXIT_CRITICAL(&s_uv_event_lock);
 }
 
 static void dome_reg_write_message(const char *message)
@@ -684,6 +739,28 @@ static void dome_apply_outputs(bool force_uv_off)
     uint16_t uva_applied = interlock || therm_hard ? 0 : uva_set;
     uint16_t uvb_applied = interlock || therm_hard ? 0 : uvb_set_permille;
 
+    bool uva_cut = (uva_set > 0) && (interlock || therm_hard);
+    bool uvb_cut = (uvb_set_permille > 0) && (interlock || therm_hard);
+    bool prev_uva_cut;
+    bool prev_uvb_cut;
+    portENTER_CRITICAL(&s_uv_event_lock);
+    prev_uva_cut = s_uva_cut_active;
+    prev_uvb_cut = s_uvb_cut_active;
+    s_uva_cut_active = uva_cut;
+    s_uvb_cut_active = uvb_cut;
+    portEXIT_CRITICAL(&s_uv_event_lock);
+
+    uint8_t event_mask = 0;
+    if (uva_cut && !prev_uva_cut) {
+        event_mask |= UV_EVENT_MASK_UVA;
+    }
+    if (uvb_cut && !prev_uvb_cut) {
+        event_mask |= UV_EVENT_MASK_UVB;
+    }
+    if (event_mask != 0) {
+        uv_history_record(event_mask);
+    }
+
     ledc_cc_set(0, cct_day);
     ledc_cc_set(1, cct_warm);
     ledc_cc_set(2, uva_applied);
@@ -780,10 +857,46 @@ static void therm_hard_init(void)
 
 static void dome_update_diagnostics(void)
 {
-    regfile[DOME_REG_DIAG_I2C_ERRORS] = 0; // placeholder for future error tracking
+    uint32_t history[DOME_DIAG_UV_HISTORY_DEPTH];
+    uint8_t head;
+    uint32_t total;
+
+    portENTER_CRITICAL(&s_uv_event_lock);
+    memcpy(history, s_uv_event_history, sizeof(history));
+    head = s_uv_event_head;
+    total = s_uv_event_total;
+    portEXIT_CRITICAL(&s_uv_event_lock);
+
+    uint32_t i2c_errors = i2c_slave_if_get_error_count();
+    if (i2c_errors > 0xFFFFu) {
+        i2c_errors = 0xFFFFu;
+    }
+    wr16(DOME_REG_DIAG_I2C_ERR_L, (uint16_t)i2c_errors);
+
+    uint32_t pwm_errors = fan_get_error_count();
+    if (pwm_errors > 0xFFFFu) {
+        pwm_errors = 0xFFFFu;
+    }
+    wr16(DOME_REG_DIAG_PWM_ERR_L, (uint16_t)pwm_errors);
+
     uint32_t cnt = interlock_count;
-    regfile[DOME_REG_DIAG_INT_COUNT_L] = (uint8_t)(cnt & 0xFF);
-    regfile[DOME_REG_DIAG_INT_COUNT_H] = (uint8_t)((cnt >> 8) & 0xFF);
+    if (cnt > 0xFFFFu) {
+        cnt = 0xFFFFu;
+    }
+    wr16(DOME_REG_DIAG_INT_COUNT_L, (uint16_t)cnt);
+
+    uint32_t total_clamped = total;
+    if (total_clamped > 0xFFu) {
+        total_clamped = 0xFFu;
+    }
+    regfile[DOME_REG_DIAG_UV_EVENT_COUNT] = (uint8_t)total_clamped;
+    regfile[DOME_REG_DIAG_UV_EVENT_HEAD] = head;
+    regfile[DOME_REG_DIAG_CMD] = DOME_DIAG_CMD_NONE;
+
+    for (size_t i = 0; i < DOME_DIAG_UV_HISTORY_DEPTH; ++i) {
+        uint8_t offset = (uint8_t)(DOME_REG_DIAG_UV_HISTORY + i * DOME_DIAG_UV_EVENT_STRIDE);
+        wr32(offset, history[i]);
+    }
 }
 
 static bool range_intersects(uint8_t reg, size_t len, uint8_t base, size_t block_len)
@@ -837,6 +950,19 @@ static void dome_handle_write(uint8_t reg, const uint8_t *data, size_t len)
 
     if (range_intersects(reg, len, DOME_REG_BLOCK_OTA_CTRL, DOME_REG_BLOCK_OTA_CTRL_LEN)) {
         dome_ota_handle_command(regfile[DOME_REG_OTA_CMD]);
+    }
+
+    if (range_intersects(reg, len, DOME_REG_DIAG_CMD, 1)) {
+        uint8_t cmd = regfile[DOME_REG_DIAG_CMD];
+        if (cmd == DOME_DIAG_CMD_RESET) {
+            i2c_slave_if_reset_errors();
+            fan_reset_error_count();
+            interlock_count = 0;
+            uv_history_reset();
+            regfile[DOME_REG_DIAG_UV_EVENT_COUNT] = 0;
+            regfile[DOME_REG_DIAG_UV_EVENT_HEAD] = 0;
+        }
+        regfile[DOME_REG_DIAG_CMD] = DOME_DIAG_CMD_NONE;
     }
 }
 
@@ -897,6 +1023,7 @@ void app_main(void)
 
     // Default registers
     memset(regfile, 0, sizeof(regfile));
+    uv_history_reset();
     wr16(DOME_REG_UVA_CLAMP_L, DOME_UVA_CLAMP_PM_DEFAULT);
     regfile[DOME_REG_UVB_CLAMP_PM] = (uint8_t)(DOME_UVB_CLAMP_PM_DEFAULT / 40);
     regfile[DOME_REG_UVB_PERIOD_S] = 60;

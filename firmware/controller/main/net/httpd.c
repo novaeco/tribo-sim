@@ -232,6 +232,7 @@ static esp_err_t read_dome_status(cJSON *root)
     uint8_t fan_buf[DOME_REG_BLOCK_FAN_LEN] = {0};
     uint8_t uvi_buf[DOME_REG_BLOCK_UVI_LEN] = {0};
     uint8_t heat_buf[DOME_REG_BLOCK_HEATSINK_LEN] = {0};
+    uint8_t diag_buf[DOME_REG_BLOCK_DIAG_LEN] = {0};
 
     ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_STATUS, &status, 1), TAG, "status read");
     ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_CCT, cct_buf, sizeof(cct_buf)), TAG, "cct read");
@@ -241,6 +242,7 @@ static esp_err_t read_dome_status(cJSON *root)
     ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_FAN, fan_buf, sizeof(fan_buf)), TAG, "fan read");
     ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_UVI, uvi_buf, sizeof(uvi_buf)), TAG, "uvi read");
     ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_HEATSINK, heat_buf, sizeof(heat_buf)), TAG, "heatsink read");
+    ESP_RETURN_ON_ERROR(dome_bus_read(DOME_REG_BLOCK_DIAG, diag_buf, sizeof(diag_buf)), TAG, "diag read");
 
     cJSON *light = cJSON_AddObjectToObject(root, "light");
     cJSON *cct = cJSON_AddObjectToObject(light, "cct");
@@ -270,6 +272,56 @@ static esp_err_t read_dome_status(cJSON *root)
     cJSON_AddNumberToObject(dome, "uvi", uvi);
     cJSON_AddNumberToObject(dome, "irradiance_uW_cm2", irradiance);
     cJSON_AddBoolToObject(dome, "uvi_fault", (status & ST_UVI_FAULT) != 0);
+
+    uint16_t i2c_errors = rd16_le(&diag_buf[DOME_REG_DIAG_I2C_ERR_L - DOME_REG_BLOCK_DIAG]);
+    uint16_t pwm_errors = rd16_le(&diag_buf[DOME_REG_DIAG_PWM_ERR_L - DOME_REG_BLOCK_DIAG]);
+    uint16_t interlocks = rd16_le(&diag_buf[DOME_REG_DIAG_INT_COUNT_L - DOME_REG_BLOCK_DIAG]);
+    uint8_t uv_total = diag_buf[DOME_REG_DIAG_UV_EVENT_COUNT - DOME_REG_BLOCK_DIAG];
+    uint8_t uv_head = diag_buf[DOME_REG_DIAG_UV_EVENT_HEAD - DOME_REG_BLOCK_DIAG];
+
+    cJSON *diag = cJSON_AddObjectToObject(dome, "diagnostics");
+    if (diag) {
+        cJSON_AddNumberToObject(diag, "i2c_errors", i2c_errors);
+        cJSON_AddNumberToObject(diag, "pwm_errors", pwm_errors);
+        cJSON_AddNumberToObject(diag, "interlock_count", interlocks);
+        cJSON_AddNumberToObject(diag, "uv_cut_total", uv_total);
+
+        cJSON *history = cJSON_AddArrayToObject(diag, "uv_cut_events");
+        if (history) {
+            size_t stored = uv_total;
+            if (stored > DOME_DIAG_UV_HISTORY_DEPTH) {
+                stored = DOME_DIAG_UV_HISTORY_DEPTH;
+            }
+            uint8_t start = (uint8_t)((uv_head + DOME_DIAG_UV_HISTORY_DEPTH - stored) % DOME_DIAG_UV_HISTORY_DEPTH);
+            for (size_t i = 0; i < stored; ++i) {
+                uint8_t idx = (uint8_t)((start + i) % DOME_DIAG_UV_HISTORY_DEPTH);
+                size_t base = (size_t)(DOME_REG_DIAG_UV_HISTORY - DOME_REG_BLOCK_DIAG + idx * DOME_DIAG_UV_EVENT_STRIDE);
+                uint32_t encoded = (uint32_t)diag_buf[base] |
+                                   ((uint32_t)diag_buf[base + 1] << 8) |
+                                   ((uint32_t)diag_buf[base + 2] << 16) |
+                                   ((uint32_t)diag_buf[base + 3] << 24);
+                uint32_t ts = encoded & DOME_DIAG_UV_EVENT_TIMESTAMP_MASK;
+                cJSON *entry = cJSON_CreateObject();
+                if (!entry) {
+                    continue;
+                }
+                cJSON_AddNumberToObject(entry, "timestamp_s", (double)ts);
+                cJSON *channels = cJSON_AddArrayToObject(entry, "channels");
+                if (channels) {
+                    if (encoded & DOME_DIAG_UV_EVENT_CH_UVA) {
+                        cJSON_AddItemToArray(channels, cJSON_CreateString("uva"));
+                    }
+                    if (encoded & DOME_DIAG_UV_EVENT_CH_UVB) {
+                        cJSON_AddItemToArray(channels, cJSON_CreateString("uvb"));
+                    }
+                    if (cJSON_GetArraySize(channels) == 0) {
+                        cJSON_AddItemToArray(channels, cJSON_CreateString("unknown"));
+                    }
+                }
+                cJSON_AddItemToArray(history, entry);
+            }
+        }
+    }
 
     cJSON *env = cJSON_GetObjectItem(root, "env");
     if (cJSON_IsObject(env)) {
@@ -525,6 +577,19 @@ static esp_err_t api_light_post(httpd_req_t *req)
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+static esp_err_t api_diag_reset(httpd_req_t *req)
+{
+    REQUIRE_AUTH_OR_RETURN(req);
+    uint8_t cmd = DOME_DIAG_CMD_RESET;
+    esp_err_t err = dome_bus_write(DOME_REG_DIAG_CMD, &cmd, 1);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "dome diag reset failed: %s", esp_err_to_name(err));
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "reset failed");
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
 }
 
 static esp_err_t api_calibration_get(httpd_req_t *req)
@@ -1168,6 +1233,7 @@ void httpd_start_secure(void)
 
     httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/", .method = HTTP_GET, .handler = root_handler});
     httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/status", .method = HTTP_GET, .handler = api_status_handler});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/maintenance/reset_diagnostics", .method = HTTP_POST, .handler = api_diag_reset});
     httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/light/dome0", .method = HTTP_GET, .handler = api_light_get});
     httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/light/dome0", .method = HTTP_POST, .handler = api_light_post});
     httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/calibrate/uvb", .method = HTTP_GET, .handler = api_calibration_get});
