@@ -78,6 +78,7 @@
 - `docs/climate_control.md` : machine d’états, profils jour/nuit, hystérésis et tâches FreeRTOS pour la régulation climatique.
 - `docs/validation_plan.md` : protocoles de tests sécurité UV, capteurs, endurance, régulation climatique.
 - `docs/hardware_validation.md` : recommandations CEM/burn-in + plan de qualification laboratoire.
+- `docs/burn_in.md` : procédure détaillée de burn-in (48 h), instrumentation et critères d’acceptation.
 - `firmware/panel/README.md` : instructions spécifiques au panel LVGL (Waveshare ESP32-S3 Touch LCD 7B).
 
 ---
