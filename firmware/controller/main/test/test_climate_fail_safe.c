@@ -2,12 +2,12 @@
 
 #include <math.h>
 
-#include "nvs_flash.h"
+#include "storage.h"
 #include "drivers/climate.h"
 
 TEST_CASE("climate heater fail-safe engages after missing temperature", "[climate]")
 {
-    TEST_ASSERT_EQUAL(ESP_OK, nvs_flash_init());
+    TEST_ASSERT_EQUAL(ESP_OK, storage_secure_init());
     TEST_ASSERT_EQUAL(ESP_OK, climate_init());
 
     terra_sensors_t sensors = {0};
@@ -28,5 +28,7 @@ TEST_CASE("climate heater fail-safe engages after missing temperature", "[climat
     climate_tick(&sensors, 8 * 60 + 3, &state);
     TEST_ASSERT_FALSE_MESSAGE(state.heater_on, "heater must turn off after fail-safe triggers");
     TEST_ASSERT_TRUE(isnan(state.temp_error_c));
+
+    TEST_ASSERT_EQUAL(ESP_OK, storage_secure_deinit());
 }
 

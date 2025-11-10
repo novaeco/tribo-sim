@@ -21,13 +21,54 @@
 #include "drivers/climate.h"
 #include "include/config.h"
 #include "include/dome_regs.h"
-#include "net/certs.h"
+#include "net/credentials.h"
 #include "species_profiles.h"
 #include "ota_stream.h"
 
 static const char *TAG = "HTTPSD";
 
 static httpd_handle_t s_server = NULL;
+
+static esp_err_t send_unauthorized(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, HTTPD_401_UNAUTHORIZED);
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer realm=\"Terrarium\"");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"unauthorized\"}");
+    return ESP_ERR_HTTPD_RESP_SENT;
+}
+
+#define REQUIRE_AUTH_OR_RETURN(_req)            \
+    do {                                       \
+        esp_err_t __auth = httpd_require_auth(_req); \
+        if (__auth != ESP_OK) {                 \
+            return __auth;                     \
+        }                                      \
+    } while (0)
+
+static esp_err_t httpd_require_auth(httpd_req_t *req)
+{
+    esp_err_t cred_err = credentials_init();
+    if (cred_err != ESP_OK) {
+        ESP_LOGE(TAG, "credentials_init failed: %s", esp_err_to_name(cred_err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "auth init failed");
+        return ESP_ERR_HTTPD_RESP_SENT;
+    }
+    size_t auth_len = httpd_req_get_hdr_value_len(req, "Authorization");
+    if (auth_len == 0 || auth_len >= 128) {
+        return send_unauthorized(req);
+    }
+    char authorization[128];
+    esp_err_t err = httpd_req_get_hdr_value_str(req, "Authorization", authorization, sizeof(authorization));
+    if (err != ESP_OK) {
+        return send_unauthorized(req);
+    }
+    if (!credentials_authorize_bearer(authorization)) {
+        return send_unauthorized(req);
+    }
+    return ESP_OK;
+}
 
 static const char ROOT_HTML[] =
     "<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Terrarium S3</title>"
@@ -171,12 +212,14 @@ static esp_err_t read_dome_status(cJSON *root)
 
 static esp_err_t root_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, ROOT_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t api_status_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     cJSON *root = cJSON_CreateObject();
     if (!root) {
         return ESP_ERR_NO_MEM;
@@ -249,6 +292,7 @@ static esp_err_t api_status_handler(httpd_req_t *req)
 
 static esp_err_t api_light_get(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     cJSON *root = cJSON_CreateObject();
     if (!root) {
         return ESP_ERR_NO_MEM;
@@ -270,6 +314,7 @@ static esp_err_t api_light_get(httpd_req_t *req)
 
 static esp_err_t api_light_post(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     char buf[512];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) {
@@ -332,6 +377,7 @@ static esp_err_t api_light_post(httpd_req_t *req)
 
 static esp_err_t api_calibration_get(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     float k = 0.0f, uvi_max = 0.0f;
     calib_get_uvb(&k, &uvi_max);
     cJSON *root = cJSON_CreateObject();
@@ -353,6 +399,7 @@ static esp_err_t api_calibration_get(httpd_req_t *req)
 
 static esp_err_t api_calibration_post(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     char buf[256];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) {
@@ -379,6 +426,7 @@ static esp_err_t api_calibration_post(httpd_req_t *req)
 
 static esp_err_t api_alarms_mute(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     bool muted = alarms_get_mute();
     char buf[64];
     snprintf(buf, sizeof(buf), "{\"muted\":%s}", muted ? "true" : "false");
@@ -388,6 +436,7 @@ static esp_err_t api_alarms_mute(httpd_req_t *req)
 
 static esp_err_t api_alarms_toggle(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     char buf[128];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) {
@@ -435,6 +484,7 @@ static cJSON *schedule_to_json(const climate_schedule_t *schedule)
 
 static esp_err_t api_species_get(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     cJSON *root = cJSON_CreateObject();
     if (!root) {
         return ESP_ERR_NO_MEM;
@@ -483,6 +533,7 @@ static esp_err_t api_species_get(httpd_req_t *req)
 
 static esp_err_t api_species_apply(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     char buf[128];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) {
@@ -509,6 +560,7 @@ static esp_err_t api_species_apply(httpd_req_t *req)
 
 static esp_err_t api_species_custom(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     char buf[512];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) {
@@ -553,8 +605,83 @@ static esp_err_t api_species_custom(httpd_req_t *req)
     return httpd_resp_sendstr(req, out);
 }
 
+static esp_err_t api_security_rotate(httpd_req_t *req)
+{
+    REQUIRE_AUTH_OR_RETURN(req);
+    bool rotate_cert = true;
+    bool rotate_token = true;
+    int remaining = req->content_len;
+    char payload[128] = {0};
+    int offset = 0;
+    while (remaining > 0 && offset < (int)(sizeof(payload) - 1)) {
+        size_t to_read = remaining;
+        size_t capacity = sizeof(payload) - 1 - offset;
+        if (to_read > capacity) {
+            to_read = capacity;
+        }
+        int chunk = httpd_req_recv(req, payload + offset, to_read);
+        if (chunk <= 0) {
+            break;
+        }
+        offset += chunk;
+        remaining -= chunk;
+    }
+    while (remaining > 0) {
+        char discard[32];
+        size_t to_read = remaining > (int)sizeof(discard) ? sizeof(discard) : remaining;
+        int chunk = httpd_req_recv(req, discard, to_read);
+        if (chunk <= 0) {
+            break;
+        }
+        remaining -= chunk;
+    }
+    payload[offset] = '\0';
+    if (offset > 0) {
+        cJSON *root = cJSON_Parse(payload);
+        if (root) {
+            cJSON *cert = cJSON_GetObjectItem(root, "rotate_cert");
+            if (cJSON_IsBool(cert)) {
+                rotate_cert = cJSON_IsTrue(cert);
+            }
+            cJSON *token = cJSON_GetObjectItem(root, "rotate_token");
+            if (cJSON_IsBool(token)) {
+                rotate_token = cJSON_IsTrue(token);
+            }
+            cJSON_Delete(root);
+        }
+    }
+    esp_err_t err = credentials_rotate(rotate_cert, rotate_token);
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "rotation failed");
+    }
+    const char *new_token = rotate_token ? credentials_bootstrap_token() : NULL;
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddBoolToObject(resp, "rotate_cert", rotate_cert);
+    cJSON_AddBoolToObject(resp, "rotate_token", rotate_token);
+    if (rotate_token) {
+        if (new_token) {
+            cJSON_AddStringToObject(resp, "token", new_token);
+        } else {
+            cJSON_AddNullToObject(resp, "token");
+        }
+    }
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    if (!json) {
+        return ESP_ERR_NO_MEM;
+    }
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t send_err = httpd_resp_sendstr(req, json);
+    free(json);
+    return send_err;
+}
+
 static esp_err_t handle_ota_controller(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
     if (!partition) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No OTA partition");
@@ -595,6 +722,7 @@ static esp_err_t dome_ota_chunk_cb(const uint8_t *chunk, size_t len, void *ctx)
 
 static esp_err_t handle_ota_dome(httpd_req_t *req)
 {
+    REQUIRE_AUTH_OR_RETURN(req);
     uint8_t cmd = DOME_OTA_CMD_BEGIN;
     ESP_RETURN_ON_ERROR(dome_bus_write(DOME_REG_OTA_CMD, &cmd, 1), TAG, "dome ota begin");
     int received;
@@ -623,13 +751,25 @@ void httpd_start_secure(void)
     if (s_server) {
         return;
     }
+    if (credentials_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Unable to load TLS credentials");
+        return;
+    }
+    size_t cert_len = 0;
+    size_t key_len = 0;
+    const uint8_t *cert = credentials_server_cert(&cert_len);
+    const uint8_t *key = credentials_server_key(&key_len);
+    if (!cert || !key || cert_len == 0 || key_len == 0) {
+        ESP_LOGE(TAG, "TLS keypair unavailable");
+        return;
+    }
     httpd_ssl_config_t conf = HTTPD_SSL_CONFIG_DEFAULT();
     conf.httpd.uri_match_fn = httpd_uri_match_wildcard;
     conf.port_secure = 443;
-    conf.servercert = (const uint8_t *)CONTROLLER_SERVER_CERT_PEM;
-    conf.servercert_len = strlen(CONTROLLER_SERVER_CERT_PEM);
-    conf.prvtkey_pem = (const uint8_t *)CONTROLLER_SERVER_KEY_PEM;
-    conf.prvtkey_len = strlen(CONTROLLER_SERVER_KEY_PEM);
+    conf.servercert = cert;
+    conf.servercert_len = cert_len;
+    conf.prvtkey_pem = key;
+    conf.prvtkey_len = key_len;
     conf.httpd.max_uri_handlers = 20;
 
     esp_err_t err = httpd_ssl_start(&s_server, &conf);
@@ -650,6 +790,7 @@ void httpd_start_secure(void)
     httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/species", .method = HTTP_GET, .handler = api_species_get});
     httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/species/apply", .method = HTTP_POST, .handler = api_species_apply});
     httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/species/custom", .method = HTTP_POST, .handler = api_species_custom});
+    httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/security/rotate", .method = HTTP_POST, .handler = api_security_rotate});
     httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/ota/controller", .method = HTTP_POST, .handler = handle_ota_controller});
     httpd_register_uri_handler(s_server, &(httpd_uri_t){.uri = "/api/ota/dome", .method = HTTP_POST, .handler = handle_ota_dome});
 }

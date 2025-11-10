@@ -1,16 +1,12 @@
 #include "unity.h"
-#include "nvs_flash.h"
+#include "storage.h"
 #include "species_profiles.h"
 #include "drivers/climate.h"
 
 static void init_nvs(void)
 {
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        TEST_ASSERT_EQUAL(ESP_OK, nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    TEST_ASSERT_EQUAL(ESP_OK, err);
+    TEST_ASSERT_EQUAL(ESP_OK, storage_secure_erase());
+    TEST_ASSERT_EQUAL(ESP_OK, storage_secure_init());
 }
 
 TEST_CASE("species builtin profiles initialise climate", "[species]")
@@ -26,5 +22,5 @@ TEST_CASE("species builtin profiles initialise climate", "[species]")
     climate_state_t state;
     TEST_ASSERT_TRUE(climate_get_state(&state));
     TEST_ASSERT_TRUE(state.temp_setpoint_c > 0.0f);
-    nvs_flash_deinit();
+    TEST_ASSERT_EQUAL(ESP_OK, storage_secure_deinit());
 }

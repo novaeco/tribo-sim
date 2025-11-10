@@ -14,7 +14,7 @@
 1. **Contrôleur** : ouvrir `firmware/controller` dans VSCode + PlatformIO → build + flash (`board = esp32-s3-devkitc-1`).
 2. **Dôme** : ouvrir `firmware/dome` → build + flash (même board).
 3. **Panel tactile** : `cd firmware/panel` → `idf.py set-target esp32s3 && idf.py build flash monitor` (Waveshare ESP32-S3 Touch LCD 7B).
-4. Le contrôleur démarre en **AP+STA** (`SSID: terrarium-s3`, `PASS: terrarium123`) + serveur **HTTPS** (certificat auto-signé). Le panel peut se connecter en STA (NVS) ou via l’AP contrôleur.
+4. Le contrôleur démarre en **AP+STA** (`SSID: terrarium-s3`, `PASS: terrarium123`) + serveur **HTTPS** (certificat auto-signé généré au 1er boot) protégé par un **Bearer token** (voir `docs/security_and_secrets.md`). Le panel peut se connecter en STA (NVS) ou via l’AP contrôleur.
 5. Interface web/panel → sliders CCT/UVA/UVB, UVB pulsé, **capteurs**, **mute alarmes**, **calibration UVI**, **régulation climatique**.
 6. **Câblage** : I²C maître (SDA=8, SCL=9), dôme esclave @ **0x3A**, **INT** OD (GPIO1), **interlock capot** (GPIO17 dôme, actif bas).
 7. **Interlock** : ouvrir le capot coupe les **UV** < 100 ms (soft) + thermostat **hard** (85–90 °C) **en série** CH1–CH4.
@@ -79,6 +79,7 @@
 - `docs/validation_plan.md` : protocoles de tests sécurité UV, capteurs, endurance, régulation climatique.
 - `docs/hardware_validation.md` : recommandations CEM/burn-in + plan de qualification laboratoire.
 - `docs/burn_in.md` : procédure détaillée de burn-in (48 h), instrumentation et critères d’acceptation.
+- `docs/security_and_secrets.md` : stratégie TLS, tokens API, procédures de rotation et bonnes pratiques SOC.
 - `firmware/panel/README.md` : instructions spécifiques au panel LVGL (Waveshare ESP32-S3 Touch LCD 7B).
 
 ---
@@ -118,7 +119,7 @@
 - Prérequis : VSCode + **PlatformIO**.
 - Carte : `esp32-s3-devkitc-1`.
 - `sdkconfig.defaults` : OPI Flash/PSRAM @80 MHz activés, USB‑CDC, Dual‑OTA.
-- Partitions (`partitions.csv`) : `factory + ota_0 + ota_1 + nvs + spiffs`.
+- Partitions (`partitions.csv`) : `factory + ota_0 + ota_1 + nvs + nvs_keys + spiffs`.
 
 ```bash
 # Contrôleur
@@ -141,9 +142,11 @@ idf.py -p /dev/ttyACM0 flash monitor
 ## Tests & Validation logicielle
 
 - **Lint PlatformIO** : `pio check -e s3-wroom2-idf` dans `firmware/controller` et `firmware/dome` (cppcheck + clang-tidy configurés dans `platformio.ini`).
-- **Unit tests ESP-IDF** : `idf.py build -T test_http_config && idf.py flash -T test_http_config` dans `firmware/panel` pour exécuter la campagne Unity.
+- **Unit tests ESP-IDF** :
+  - `idf.py build -T test_http_config && idf.py flash -T test_http_config` dans `firmware/panel` (campagne Unity LVGL).
+  - `idf.py test -T http_security` dans `firmware/controller` valide le refus sans Bearer token.
 - **Analyse statique** : `idf.py clang-check` (nécessite `clangd` et l’extension ESP-IDF) afin de détecter les dérives de pointeurs ou d’API.
-- **CI locale** : `act -j build` reproduit le workflow GitHub Actions `.github/workflows/build.yml` (installer `act` via Homebrew ou `go install github.com/nektos/act`).
+- **CI locale** : `act -j build` reproduit le workflow GitHub Actions `.github/workflows/build.yml` (installer `act` via Homebrew ou `go install github.com/nektos/act`). Pour la sécurité HTTP, reproduire `act -j controller-security`.
 
 > 🛡️ **Sécurité** : lors des tests automatisés, limiter la puissance UV via un banc d’alimentation avec courant plafonné et installer des écrans absorbants (EN/IEC 62471).
 
