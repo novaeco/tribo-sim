@@ -1,16 +1,12 @@
 #include "unity.h"
-#include "nvs_flash.h"
 #include "esp_err.h"
 #include "calib.h"
+#include "storage.h"
 
 static void init_nvs_storage(void)
 {
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        TEST_ASSERT_EQUAL(ESP_OK, nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    TEST_ASSERT_EQUAL(ESP_OK, err);
+    TEST_ASSERT_EQUAL(ESP_OK, storage_secure_erase());
+    TEST_ASSERT_EQUAL(ESP_OK, storage_secure_init());
 }
 
 TEST_CASE("calibration init/deinit cycles reuse a single handle", "[calib]")
@@ -32,7 +28,7 @@ TEST_CASE("calibration init/deinit cycles reuse a single handle", "[calib]")
         calib_deinit();
     }
 
-    TEST_ASSERT_EQUAL(ESP_OK, nvs_flash_deinit());
+    TEST_ASSERT_EQUAL(ESP_OK, storage_secure_deinit());
 }
 
 TEST_CASE("calibration setters guard against uninitialised state", "[calib]")

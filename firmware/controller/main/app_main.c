@@ -5,7 +5,6 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_err.h"
-#include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"   // + ajout pour ledc_*
 #include "esp_timer.h"
@@ -26,6 +25,8 @@
 #include "net/httpd.h"
 #include "drivers/alarms.h"
 #include "drivers/dome_bus.h"
+#include "storage.h"
+#include "net/credentials.h"
 
 static const char *TAG = "CTRL_APP";
 static const uint8_t k_dome_channels[] = {
@@ -315,15 +316,14 @@ static void actuators_task(void *arg)
 
 void app_main(void)
 {
-    esp_err_t err;
-
-    // NVS init
-    err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ESP_ERROR_CHECK(nvs_flash_init());
+    // Secure storage init
+    ESP_ERROR_CHECK(storage_secure_init());
+    ESP_ERROR_CHECK(credentials_init());
+    const char *bootstrap_token = credentials_bootstrap_token();
+    if (bootstrap_token) {
+        ESP_LOGW(TAG, "HTTP API bootstrap token: %s", bootstrap_token);
+        ESP_LOGW(TAG, "Store this token securely; it will not be displayed again.");
     }
-    ESP_LOGI(TAG, "NVS initialized");
 
     ESP_ERROR_CHECK(alarms_init());
     ESP_LOGI(TAG, "Alarms restored");
