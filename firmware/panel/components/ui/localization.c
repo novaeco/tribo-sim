@@ -73,6 +73,8 @@ static const ui_translation_t s_translations[UI_STR_COUNT] = {
     [UI_STR_SENSOR_VALUE_PRESSURE] = {"Pression : %.1f hPa", "Pressure: %.1f hPa", "Presión: %.1f hPa"},
     [UI_STR_SENSOR_VALUE_PRESSURE_HUM] = {"Pression : %.1f hPa / Humidité : %.1f %%", "Pressure: %.1f hPa / Humidity: %.1f %%", "Presión: %.1f hPa / Humedad: %.1f %%"},
     [UI_STR_SENSOR_VALUE_UVI] = {"UVI : %.1f", "UVI: %.1f", "UVI: %.1f"},
+    [UI_STR_SENSOR_VALUE_UVI_EXT] = {"UVI : %.2f (Δ %.2f, %.1f µW/cm²)", "UVI: %.2f (Δ %.2f, %.1f µW/cm²)", "UVI: %.2f (Δ %.2f, %.1f µW/cm²)"},
+    [UI_STR_SENSOR_VALUE_UVI_FAULT] = {"UVI capteur indisponible", "UVI sensor fault", "Sensor UVI en fallo"},
     [UI_STR_SENSOR_VALUE_HEATSINK] = {"Dissipateur : %.1f °C", "Heatsink: %.1f °C", "Disipador: %.1f °C"},
     [UI_STR_SENSOR_VALUE_UNKNOWN] = {"Indisponible", "Unavailable", "No disponible"},
     [UI_STR_CALIB_STATUS] = {"k = %.2f / UVI = %.2f", "k = %.2f / UVI = %.2f", "k = %.2f / UVI = %.2f"},

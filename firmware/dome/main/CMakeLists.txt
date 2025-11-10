@@ -5,6 +5,7 @@ idf_component_register(
          "drivers/ws2812_rmt.c"
          "drivers/fan_pwm.c"
          "drivers/ntc_adc.c"
+         "drivers/uvi_sensor.c"
     INCLUDE_DIRS "include" "drivers"
     REQUIRES driver nvs_flash esp_timer esp_adc
 )

@@ -815,9 +815,6 @@ static void apply_status_to_widgets(const terrarium_status_t *status)
             lv_label_set_text_fmt(s_ctx.label_sensor_bme280, fmt_press, status->env.pressure_hpa,
                                   status->env.humidity_percent);
         }
-        if (s_ctx.label_sensor_ambient) {
-            lv_label_set_text_fmt(s_ctx.label_sensor_ambient, fmt_uvi, status->env.uvi);
-        }
     }
 
     if (status->dome.valid) {
@@ -834,6 +831,23 @@ static void apply_status_to_widgets(const terrarium_status_t *status)
         if (s_ctx.label_sensor_ds18b20) {
             const char *fmt = ui_loc_get(s_ctx.language, UI_STR_SENSOR_VALUE_HEATSINK);
             lv_label_set_text_fmt(s_ctx.label_sensor_ds18b20, fmt, status->dome.heatsink_c);
+        }
+    }
+
+    if (s_ctx.label_sensor_ambient) {
+        if (status->dome.valid && status->dome.uvi_fault) {
+            lv_label_set_text(s_ctx.label_sensor_ambient,
+                              ui_loc_get(s_ctx.language, UI_STR_SENSOR_VALUE_UVI_FAULT));
+        } else if (status->climate.valid && status->climate.uvi_valid) {
+            const char *fmt = ui_loc_get(s_ctx.language, UI_STR_SENSOR_VALUE_UVI_EXT);
+            lv_label_set_text_fmt(s_ctx.label_sensor_ambient, fmt,
+                                  status->climate.uvi_measured,
+                                  status->climate.uvi_error,
+                                  status->climate.irradiance_uW_cm2);
+        } else {
+            float fallback_uvi = status->env.valid ? status->env.uvi : status->dome.uvi;
+            const char *fmt = ui_loc_get(s_ctx.language, UI_STR_SENSOR_VALUE_UVI);
+            lv_label_set_text_fmt(s_ctx.label_sensor_ambient, fmt, fallback_uvi);
         }
     }
 
@@ -863,7 +877,9 @@ static void apply_status_to_widgets(const terrarium_status_t *status)
     update_alarm_button();
 
     if (status->env.valid) {
-        float uvi = status->dome.valid ? status->dome.uvi : status->env.uvi;
+        float uvi = status->climate.valid && status->climate.uvi_valid
+                        ? status->climate.uvi_measured
+                        : (status->dome.valid ? status->dome.uvi : status->env.uvi);
         store_history_sample(status->env.temperature_c, status->env.humidity_percent, uvi);
     }
     refresh_chart();

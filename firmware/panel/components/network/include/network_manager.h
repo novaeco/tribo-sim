@@ -22,6 +22,7 @@ typedef struct {
     float humidity_percent;
     float pressure_hpa;
     float uvi;
+    float irradiance_uW_cm2;
 } terrarium_env_snapshot_t;
 
 typedef struct {
@@ -50,6 +51,8 @@ typedef struct {
     uint8_t flags;
     float heatsink_c;
     float uvi;
+    float irradiance_uW_cm2;
+    bool uvi_fault;
 } terrarium_dome_snapshot_t;
 
 typedef struct {
@@ -60,6 +63,10 @@ typedef struct {
     float temp_setpoint_c;
     float humidity_setpoint_pct;
     float uvi_target;
+    bool uvi_valid;
+    float uvi_measured;
+    float uvi_error;
+    float irradiance_uW_cm2;
 } terrarium_climate_snapshot_t;
 
 typedef struct {
