@@ -26,7 +26,7 @@ Cette procédure valide l'endurance électrique, thermique et logicielle des ens
 - **Logs** : `idf.py monitor` (contrôleur) + capture `/api/status` toutes les 10 min (script).
 - **Température** : caméras sur dissipateur, buck, MCU ; alarme si > 75 °C.
 - **UVI** : radiomètre aligné ; dérive admissible ±0.2 UVI.
-- **I²C** : compter erreurs `DOME_REG_DIAG_I2C_ERRORS` < 5/h.
+- **I²C** : compter erreurs `DOME_REG_DIAG_I2C_ERR_L/H` < 5/h.
 - **Wi-Fi** : ping panel ↔ contrôleur (1 Hz) ; perte < 0.5 %.
 
 ## 5. Tests fonctionnels intermédiaires (toutes les 12 h)

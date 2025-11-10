@@ -1,6 +1,7 @@
 #pragma once
 #include "driver/i2c.h"
 #include <stddef.h>
+#include <stdint.h>
 
 /**
  * @brief Initialise the I2C slave peripheral.
@@ -32,3 +33,14 @@ int       i2c_slave_if_write(const uint8_t* buf, size_t len, TickType_t to);
  *        ::i2c_slave_if_init.
  */
 esp_err_t i2c_slave_if_deinit(void);
+
+/**
+ * @brief Retrieve the cumulative number of I2C slave driver errors observed
+ *        since boot or the last reset.
+ */
+uint32_t i2c_slave_if_get_error_count(void);
+
+/**
+ * @brief Clear the I2C slave error counter.
+ */
+void     i2c_slave_if_reset_errors(void);

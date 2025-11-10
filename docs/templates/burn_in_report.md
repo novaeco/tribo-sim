@@ -26,7 +26,7 @@
 - UVI min / max / moyenne : 
 - Humidité min / max / moyenne : 
 - Courant moyen LED UVB : 
-- Erreurs I²C cumulées (`DOME_REG_DIAG_I2C_ERRORS`) : 
+- Erreurs I²C cumulées (`DOME_REG_DIAG_I2C_ERR_L/H`) :
 - Alarmes (ST_OT, ST_INTERLOCK, etc.) : 
 
 ## 4. Tests intermédiaires
