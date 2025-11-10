@@ -44,7 +44,7 @@ Les ventilateurs passent progressivement de 15/25 % (base) à 65 % ou 100 % selo
 4. **Hygrométrie** : ventilation augmente avant toute action lumière (évite condensation sur optiques).
 
 ## Tâches FreeRTOS
-- `sensors_task` (période 2 s) : agrège `sensors_read()`, calcule dérives vs consigne et pousse `climate_measurement_t` (protégé par mutex `climate_measurement_mutex`).
+- `sensors_task` (période 2 s) : agrège `sensors_read()` (retourne un masque de défauts explicite), calcule dérives vs consigne et pousse `climate_measurement_t` (protégé par mutex `climate_measurement_mutex`).
 - `actuators_task` (période 1 s) : exécute `climate_tick()`, pilote SSR/FAN/dôme, applique clamp UVI et journalise anomalies (`ESP_LOGW`).
 - `btn_rearm_task` : existante, assure réarmement manuel BUS_LOSS + buzzer.
 
@@ -56,6 +56,13 @@ Les ventilateurs passent progressivement de 15/25 % (base) à 65 % ou 100 % selo
 `POST /api/climate` accepte uniquement des charges valides (bornes ci-dessus) ; en cas de violation, renvoie `400`.
 
 `GET /api/status` inclut désormais `climate` (états SSR/FAN + dérives) pour supervision rapide.
+
+## Filtrage et santé capteurs
+
+- `sensors_init()` configure chaque périphérique (DS18B20 ×2, SHT31, SHT21, BME280) une seule fois au boot : reset/chauffage OFF pour les SHT, oversampling normal pour le BME280.
+- Le module conserve pour chaque capteur un contexte (`present`, `error`, timestamp milliseconde du dernier échantillon valide, dernier `esp_err_t`).
+- Un filtrage configurable est appliqué avant `climate_tick()` : EMA (`alpha` par défaut 0,25) ou médiane glissante (fenêtre 3). Les valeurs filtrées sont exposées via `terra_sensors_t.temp_filtered_c` / `.humidity_filtered_pct` et privilégiées pour la régulation.
+- Le masque de défauts (`sensor_fault_mask`) est propagé à `climate_measurement_t` et restitué dans `/api/status` (`sensor_fault_mask` + `sensor_status[]`).
 
 ## Procédure de mise à jour
 1. Modifier le JSON via `/api/climate` avec les nouvelles consignes.

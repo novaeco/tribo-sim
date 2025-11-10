@@ -36,6 +36,7 @@ typedef struct {
     float uvi_drift;
     bool  uvi_valid;
     int64_t timestamp_ms;
+    uint32_t sensor_fault_mask;
 } climate_measurement_t;
 
 typedef struct {

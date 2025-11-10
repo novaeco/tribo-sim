@@ -24,6 +24,13 @@
 #define TCA_CH_SENSORS  0x02
 #define TCA_CH_DOME0    0x01
 
+// Sensor filtering configuration (0: none, 1: EMA, 2: median-3)
+#define SENSOR_FILTER_MODE_NONE    0
+#define SENSOR_FILTER_MODE_EMA     1
+#define SENSOR_FILTER_MODE_MEDIAN  2
+#define SENSOR_FILTER_DEFAULT_MODE SENSOR_FILTER_MODE_EMA
+#define SENSOR_FILTER_EMA_ALPHA    0.25f
+
 // === CLIMATE bounds (pour /api/climate & validations JSON) ===
 #define CLIMATE_TEMP_MIN   10.0
 #define CLIMATE_TEMP_MAX   45.0

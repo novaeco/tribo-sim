@@ -79,6 +79,10 @@ static bool pick_temperature(const terra_sensors_t *sensors, float *value)
     if (!sensors || !value) {
         return false;
     }
+    if (sensors->temp_filtered_valid) {
+        *value = sensors->temp_filtered_c;
+        return true;
+    }
     if (sensors->sht31_present) {
         *value = sensors->sht31_t_c;
         return true;
@@ -106,6 +110,10 @@ static bool pick_humidity(const terra_sensors_t *sensors, float *value)
 {
     if (!sensors || !value) {
         return false;
+    }
+    if (sensors->humidity_filtered_valid) {
+        *value = sensors->humidity_filtered_pct;
+        return true;
     }
     if (sensors->sht31_present) {
         *value = sensors->sht31_rh;
