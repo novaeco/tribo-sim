@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 #include "esp_https_server.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -226,13 +227,76 @@ static esp_err_t api_status_handler(httpd_req_t *req)
     }
 
     terra_sensors_t sensors = {0};
-    sensors_read(&sensors);
-    float temp = sensors.sht31_present ? sensors.sht31_t_c : sensors.bme_present ? sensors.bme_t_c : sensors.sht21_present ? sensors.sht21_t_c : sensors.t1_present ? sensors.t1_c : sensors.t2_c;
-    float hum = sensors.sht31_present ? sensors.sht31_rh : sensors.bme_present ? sensors.bme_rh : sensors.sht21_rh;
+    uint32_t fault_mask = sensors_read(&sensors);
+    float temp = NAN;
+    float hum = NAN;
+    if (sensors.temp_filtered_valid) {
+        temp = sensors.temp_filtered_c;
+    } else if (sensors.sht31_present) {
+        temp = sensors.sht31_t_c;
+    } else if (sensors.bme_present) {
+        temp = sensors.bme_t_c;
+    } else if (sensors.sht21_present) {
+        temp = sensors.sht21_t_c;
+    } else if (sensors.t1_present) {
+        temp = sensors.t1_c;
+    } else if (sensors.t2_present) {
+        temp = sensors.t2_c;
+    }
+
+    if (sensors.humidity_filtered_valid) {
+        hum = sensors.humidity_filtered_pct;
+    } else if (sensors.sht31_present) {
+        hum = sensors.sht31_rh;
+    } else if (sensors.bme_present) {
+        hum = sensors.bme_rh;
+    } else if (sensors.sht21_present) {
+        hum = sensors.sht21_rh;
+    }
     cJSON *env = cJSON_AddObjectToObject(root, "env");
-    cJSON_AddNumberToObject(env, "temperature", temp);
-    cJSON_AddNumberToObject(env, "humidity", hum);
-    cJSON_AddNumberToObject(env, "pressure", sensors.bme_p_hpa);
+    if (isfinite(temp)) {
+        cJSON_AddNumberToObject(env, "temperature", temp);
+    }
+    if (isfinite(hum)) {
+        cJSON_AddNumberToObject(env, "humidity", hum);
+    }
+    if (sensors.temp_filtered_valid) {
+        cJSON_AddNumberToObject(env, "temperature_filtered", sensors.temp_filtered_c);
+    }
+    if (sensors.humidity_filtered_valid) {
+        cJSON_AddNumberToObject(env, "humidity_filtered", sensors.humidity_filtered_pct);
+    }
+    if (sensors.bme_present && isfinite(sensors.bme_p_hpa)) {
+        cJSON_AddNumberToObject(env, "pressure", sensors.bme_p_hpa);
+    }
+    cJSON_AddNumberToObject(env, "sensor_fault_mask", (double)fault_mask);
+
+    cJSON *sensor_status = cJSON_AddArrayToObject(root, "sensor_status");
+    if (sensor_status) {
+        for (size_t i = 0; i < TERRA_SENSOR_COUNT; ++i) {
+            cJSON *entry = cJSON_CreateObject();
+            if (!entry) {
+                continue;
+            }
+            const terra_sensor_status_t *st = &sensors.status[i];
+            cJSON_AddStringToObject(entry, "id", terra_sensor_names[i]);
+            cJSON_AddBoolToObject(entry, "present", st->present);
+            cJSON_AddBoolToObject(entry, "error", st->error);
+            if (st->last_valid_timestamp_ms > 0) {
+                cJSON_AddNumberToObject(entry, "last_valid_ms", (double)st->last_valid_timestamp_ms);
+            }
+            if (st->last_error != ESP_OK) {
+                cJSON_AddStringToObject(entry, "last_error", esp_err_to_name(st->last_error));
+            }
+            cJSON_AddItemToArray(sensor_status, entry);
+        }
+    }
+
+    if (fault_mask != 0) {
+        char mask_buf[12];
+        snprintf(mask_buf, sizeof(mask_buf), "0x%08" PRIX32, fault_mask);
+        cJSON_AddStringToObject(root, "sensor_fault_mask_hex", mask_buf);
+    }
 
     cJSON *alarms = cJSON_AddObjectToObject(root, "alarms");
     bool muted = alarms_get_mute();

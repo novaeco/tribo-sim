@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdint.h>
+#include <inttypes.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -64,6 +66,10 @@ static bool pick_temperature(const terra_sensors_t *s, float *value)
     if (!s || !value) {
         return false;
     }
+    if (s->temp_filtered_valid) {
+        *value = s->temp_filtered_c;
+        return true;
+    }
     if (s->sht31_present) {
         *value = s->sht31_t_c;
         return true;
@@ -91,6 +97,10 @@ static bool pick_humidity(const terra_sensors_t *s, float *value)
 {
     if (!s || !value) {
         return false;
+    }
+    if (s->humidity_filtered_valid) {
+        *value = s->humidity_filtered_pct;
+        return true;
     }
     if (s->sht31_present) {
         *value = s->sht31_rh;
@@ -147,7 +157,7 @@ static void sensors_task(void *arg)
     const TickType_t period = pdMS_TO_TICKS(2000);
     while (true) {
         terra_sensors_t sensors = {0};
-        sensors_read(&sensors);
+        uint32_t fault_mask = sensors_read(&sensors);
         climate_state_t state;
         bool has_state = climate_get_state(&state);
         float temp = 0.0f;
@@ -175,7 +185,8 @@ static void sensors_task(void *arg)
             .irradiance_uW_cm2 = uvi_valid ? dome_irradiance : NAN,
             .uvi_drift = NAN,
             .uvi_valid = uvi_valid,
-            .timestamp_ms = esp_timer_get_time() / 1000
+            .timestamp_ms = esp_timer_get_time() / 1000,
+            .sensor_fault_mask = fault_mask,
         };
         if (has_state) {
             if (has_temp) {
@@ -200,13 +211,24 @@ static void actuators_task(void *arg)
 {
     (void)arg;
     const TickType_t period = pdMS_TO_TICKS(1000);
+    static uint32_t prev_fault_mask = 0xFFFFFFFFu;
     while (true) {
         terra_sensors_t sensors = {0};
         climate_measurement_t meas;
+        uint32_t fault_mask = 0;
         if (climate_measurement_get(&meas)) {
             sensors = meas.sensors;
+            fault_mask = meas.sensor_fault_mask;
         } else {
-            sensors_read(&sensors);
+            fault_mask = sensors_read(&sensors);
+        }
+        if (fault_mask != prev_fault_mask) {
+            if (fault_mask != 0) {
+                ESP_LOGW(TAG, "Sensor fault mask: 0x%08" PRIX32, fault_mask);
+            } else if (prev_fault_mask != 0xFFFFFFFFu && prev_fault_mask != 0) {
+                ESP_LOGI(TAG, "Sensor faults cleared");
+            }
+            prev_fault_mask = fault_mask;
         }
 
         int minute_of_day = 0;
