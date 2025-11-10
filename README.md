@@ -301,13 +301,6 @@ Retourne un JSON agrégé **capteurs + dôme** :
 
 ---
 
-## Limitations (connues)
-
-- BME280 : compensation pression simplifiée (suffisant pour T/RH usage terra).  
-- Map registres du dôme minimaliste (1 octet/lecture). Étendre si besoin (blocs multi‑octets).  
-- Pas de TLS/HTTPS (ajouter esp‑tls + certs si nécessaire).
-
----
 
 ## Roadmap (suggestions)
 
