@@ -1,5 +1,7 @@
 # UVI Integration Build Attempts
 
+> **Licence :** MIT — voir [`LICENSE`](../../LICENSE). Garder cette mention dans tout rapport dérivé ou publication.
+
 ## Context
 
 - Commit: a90433a27f47342b7ba114146988df87c156ad04

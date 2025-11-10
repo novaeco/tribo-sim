@@ -1,5 +1,7 @@
 # Recommandations CEM et endurance
 
+> **Licence :** MIT — voir [`LICENSE`](../LICENSE). Inclure cette notice lors du partage ou de la reprise dans des dossiers de qualification.
+
 ## Blindage et routage
 - Utiliser un plan de masse continu sur les deux couches principales.
 - Séparer les pistes rapides (SPI LCD, USB) des capteurs analogiques.

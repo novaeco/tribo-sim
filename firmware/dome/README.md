@@ -2,6 +2,7 @@
 
 - Framework: ESP-IDF via PlatformIO
 - MCU: ESP32-S3-WROOM-2-N32R16V
+- Licence: MIT — voir [`LICENSE`](../../LICENSE). Toute redistribution (code, binaires, documentation associée) doit conserver la notice MIT.
 - Features in this baseline:
   - I2C slave @ 0x3A (very simple register protocol for demo)
   - LEDC PWM (CH1/CH2 whites, CH3 UVA, CH4 UVB)

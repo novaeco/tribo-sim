@@ -2,6 +2,8 @@
 
 Firmware ESP-IDF pour le panneau Waveshare ESP32-S3 Touch LCD 7B utilisé comme interface locale du contrôleur de terrarium. Le projet intègre LVGL v9, l'afficheur RGB 1024×600 et le contrôleur tactile GT911.
 
+> **Licence :** MIT — voir [`LICENSE`](../../LICENSE). Publiez les binaires OTA/documentations accompagnés de la notice MIT et du disclaimer.
+
 ## Fonctionnalités
 
 - Connexion Wi-Fi station configurable (SSID/mot de passe) avec stockage dans NVS.

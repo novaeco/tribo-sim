@@ -1,5 +1,7 @@
 # Plan de validation — Terrarium S3 v0.3
 
+> **Licence :** MIT — voir [`LICENSE`](../LICENSE). Toute redistribution du plan (interne ou client final) doit conserver cette notice et la clause de non-garantie.
+
 ## 1) Sécurité hard (dôme)
 - **Thermostat 85–90 °C** en série CH1–CH4 : vérifier coupure de courant LED CC (alimentation stable, aucun PWM résiduel).
 - **Interlock capot** (GPIO17, actif bas) :

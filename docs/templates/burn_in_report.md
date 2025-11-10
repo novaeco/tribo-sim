@@ -1,6 +1,8 @@
 # Rapport burn-in Terrarium S3
 
-- **Numéro de série** : 
+> **Licence :** MIT — voir [`LICENSE`](../../LICENSE). Conserver cette notice lors de toute duplication du gabarit.
+
+- **Numéro de série** :
 - **Firmware contrôleur** : 
 - **Firmware dôme** : 
 - **Firmware panel** : 

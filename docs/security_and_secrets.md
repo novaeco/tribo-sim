@@ -1,5 +1,7 @@
 # Sécurité TLS & Gestion des secrets
 
+> **Licence :** MIT — voir [`LICENSE`](../LICENSE). Inclure cette notice lors de la diffusion de ces procédures internes/externe.
+
 ## Provisionnement automatique
 
 - **TLS** : au premier démarrage, le contrôleur génère une paire RSA‑2048 et un certificat X.509 auto-signé (CN `terrarium-controller`).

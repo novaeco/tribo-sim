@@ -3,6 +3,8 @@
 ## Objectif
 Assurer un microclimat stable (température, hygrométrie, UV) avec profils jour/nuit programmables, hystérésis maîtrisée et commandes coordonnées des actionneurs (SSR chauffage/éclairage, ventilateurs PWM, dômes UV).
 
+> **Licence :** MIT — voir [`LICENSE`](../LICENSE). Conserver cette notice et le disclaimer lors de toute redistribution (numérique ou papier).
+
 ## Planification jour/nuit
 La structure `climate_schedule_t` (persistée en NVS, clé `climate/schedule`) décrit deux profils :
 
