@@ -1,13 +1,20 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "esp_ota_ops.h"
+#include "esp_app_desc.h"
+#include "esp_err.h"
+#include "esp_check.h"
+
+#include "mbedtls/sha256.h"
 
 #include "include/config.h"
 #include "include/regs.h"
@@ -20,6 +27,8 @@
 
 static const char *TAG = "DOME_APP";
 
+#define OTA_VERSION_MAX_LEN 32
+
 static uint8_t regfile[256]; // I2C register space
 static float t_c = 25.0f;
 static volatile bool interlock_tripped = false;
@@ -29,17 +38,82 @@ typedef struct {
     esp_ota_handle_t handle;
     const esp_partition_t *partition;
     uint32_t bytes_written;
+    uint32_t expected_size;
+    uint8_t expected_sha[32];
+    char expected_version[OTA_VERSION_MAX_LEN];
+    bool expect_size;
+    bool sha_active;
     uint8_t status;
     uint8_t error;
+    mbedtls_sha256_context sha_ctx;
 } dome_ota_ctx_t;
+
+typedef struct {
+    uint32_t magic;
+    uint8_t state;
+    uint8_t error;
+    uint8_t flags;
+    uint8_t reserved;
+    uint32_t image_size;
+    uint8_t sha256[32];
+    char version[OTA_VERSION_MAX_LEN];
+    char message[64];
+} dome_ota_status_record_t;
+
+typedef enum {
+    DOME_OTA_STATE_IDLE = 0,
+    DOME_OTA_STATE_MANIFEST_ACCEPTED = 1,
+    DOME_OTA_STATE_DOWNLOADING = 2,
+    DOME_OTA_STATE_VERIFYING = 3,
+    DOME_OTA_STATE_READY = 4,
+    DOME_OTA_STATE_PENDING_REBOOT = 5,
+    DOME_OTA_STATE_SUCCESS = 6,
+    DOME_OTA_STATE_FAILED = 7,
+    DOME_OTA_STATE_ROLLED_BACK = 8,
+} dome_ota_state_t;
+
+#define DOME_OTA_STATE_MAGIC 0x444f4d45u
+
+#define OTA_NVS_NAMESPACE "ota"
+#define OTA_NVS_KEY "dome"
 
 static dome_ota_ctx_t s_ota = {
     .handle = 0,
     .partition = NULL,
     .bytes_written = 0,
+    .expected_size = 0,
+    .expected_sha = {0},
+    .expected_version = {0},
+    .expect_size = false,
+    .sha_active = false,
     .status = DOME_OTA_STATUS_IDLE,
     .error = 0,
 };
+
+static dome_ota_status_record_t s_ota_state = {
+    .magic = DOME_OTA_STATE_MAGIC,
+    .state = DOME_OTA_STATE_IDLE,
+    .error = 0,
+    .flags = 0,
+    .image_size = 0,
+    .sha256 = {0},
+    .version = {0},
+    .message = {0},
+};
+
+static uint8_t dome_hw_status_for(dome_ota_state_t state);
+static void dome_status_sync_registers(void);
+static void dome_status_store(void);
+static void dome_status_commit(void);
+static void dome_status_set_message(const char *message);
+static void dome_status_set_manifest(uint32_t image_size, const uint8_t sha[32], const char *version);
+static void dome_status_set(dome_ota_state_t state, uint8_t error, const char *message);
+static void dome_status_load(void);
+static void dome_status_handle_boot(void);
+static int compare_versions(const char *current, const char *candidate);
+static esp_err_t dome_ota_load_manifest(void);
+static void dome_ota_reset_context(void);
+static void dome_ota_fail(esp_err_t err, const char *message, uint8_t set_flags, uint8_t clear_flags);
 
 static inline uint16_t rd16(uint8_t reg)
 {
@@ -50,6 +124,345 @@ static inline void wr16(uint8_t reg, uint16_t value)
 {
     regfile[reg] = (uint8_t)(value & 0xFF);
     regfile[reg + 1] = (uint8_t)(value >> 8);
+}
+
+static inline void wr32(uint8_t reg, uint32_t value)
+{
+    regfile[reg] = (uint8_t)(value & 0xFF);
+    regfile[reg + 1] = (uint8_t)((value >> 8) & 0xFF);
+    regfile[reg + 2] = (uint8_t)((value >> 16) & 0xFF);
+    regfile[reg + 3] = (uint8_t)((value >> 24) & 0xFF);
+}
+
+static void dome_reg_write_message(const char *message)
+{
+    memset(&regfile[DOME_REG_OTA_STATUS_MSG], 0, DOME_REG_OTA_STATUS_MSG_LEN);
+    if (message && message[0]) {
+        strncpy((char *)&regfile[DOME_REG_OTA_STATUS_MSG], message, DOME_REG_OTA_STATUS_MSG_LEN - 1);
+    }
+}
+
+static uint8_t dome_hw_status_for(dome_ota_state_t state)
+{
+    switch (state) {
+    case DOME_OTA_STATE_IDLE:
+    case DOME_OTA_STATE_MANIFEST_ACCEPTED:
+        return DOME_OTA_STATUS_IDLE;
+    case DOME_OTA_STATE_DOWNLOADING:
+    case DOME_OTA_STATE_VERIFYING:
+        return DOME_OTA_STATUS_BUSY;
+    case DOME_OTA_STATE_READY:
+    case DOME_OTA_STATE_PENDING_REBOOT:
+    case DOME_OTA_STATE_SUCCESS:
+        return DOME_OTA_STATUS_DONE;
+    case DOME_OTA_STATE_FAILED:
+    case DOME_OTA_STATE_ROLLED_BACK:
+    default:
+        return DOME_OTA_STATUS_ERROR;
+    }
+}
+
+static void dome_status_sync_registers(void)
+{
+    regfile[DOME_REG_OTA_STATUS] = dome_hw_status_for((dome_ota_state_t)s_ota_state.state);
+    regfile[DOME_REG_OTA_ERROR] = s_ota_state.error;
+    regfile[DOME_REG_OTA_FLAGS] = s_ota_state.flags;
+    wr32(DOME_REG_OTA_EXPECTED_SIZE_L, s_ota_state.image_size);
+    memcpy(&regfile[DOME_REG_OTA_EXPECTED_SHA], s_ota_state.sha256, 32);
+    memset(&regfile[DOME_REG_OTA_VERSION], 0, DOME_REG_OTA_VERSION_LEN);
+    strncpy((char *)&regfile[DOME_REG_OTA_VERSION], s_ota_state.version, DOME_REG_OTA_VERSION_LEN - 1);
+    dome_reg_write_message(s_ota_state.message);
+}
+
+static void dome_status_store(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(OTA_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open(%s) failed: %s", OTA_NVS_NAMESPACE, esp_err_to_name(err));
+        return;
+    }
+    s_ota_state.magic = DOME_OTA_STATE_MAGIC;
+    esp_err_t set_err = nvs_set_blob(handle, OTA_NVS_KEY, &s_ota_state, sizeof(s_ota_state));
+    if (set_err == ESP_OK) {
+        set_err = nvs_commit(handle);
+    }
+    if (set_err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_set_blob(%s) failed: %s", OTA_NVS_KEY, esp_err_to_name(set_err));
+    }
+    nvs_close(handle);
+}
+
+static void dome_status_commit(void)
+{
+    dome_status_sync_registers();
+    dome_status_store();
+}
+
+static void dome_status_set_message(const char *message)
+{
+    if (message) {
+        strncpy(s_ota_state.message, message, sizeof(s_ota_state.message));
+        s_ota_state.message[sizeof(s_ota_state.message) - 1] = '\0';
+    }
+}
+
+static void dome_status_set_manifest(uint32_t image_size, const uint8_t sha[32], const char *version)
+{
+    s_ota_state.image_size = image_size;
+    if (sha) {
+        memcpy(s_ota_state.sha256, sha, 32);
+    }
+    if (version) {
+        strncpy(s_ota_state.version, version, sizeof(s_ota_state.version));
+        s_ota_state.version[sizeof(s_ota_state.version) - 1] = '\0';
+    }
+}
+
+static void dome_status_set(dome_ota_state_t state, uint8_t error, const char *message)
+{
+    s_ota_state.state = (uint8_t)state;
+    s_ota_state.error = error;
+    if (message) {
+        dome_status_set_message(message);
+    }
+    dome_status_commit();
+}
+
+static void dome_status_load(void)
+{
+    size_t required = sizeof(s_ota_state);
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(OTA_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err == ESP_OK) {
+        err = nvs_get_blob(handle, OTA_NVS_KEY, &s_ota_state, &required);
+        nvs_close(handle);
+    }
+    if (err != ESP_OK || required != sizeof(s_ota_state) || s_ota_state.magic != DOME_OTA_STATE_MAGIC) {
+        ESP_LOGI(TAG, "OTA status reset (err=%s, required=%zu)", esp_err_to_name(err), required);
+        memset(&s_ota_state, 0, sizeof(s_ota_state));
+        s_ota_state.magic = DOME_OTA_STATE_MAGIC;
+        s_ota_state.state = DOME_OTA_STATE_IDLE;
+    }
+    s_ota_state.message[sizeof(s_ota_state.message) - 1] = '\0';
+    s_ota_state.version[sizeof(s_ota_state.version) - 1] = '\0';
+    dome_status_sync_registers();
+}
+
+static const char *advance_to_digit(const char *s)
+{
+    while (*s && !isdigit((unsigned char)*s)) {
+        ++s;
+    }
+    return s;
+}
+
+static long read_version_component(const char **s)
+{
+    const char *p = advance_to_digit(*s);
+    if (!*p) {
+        *s = p;
+        return 0;
+    }
+    char *end = NULL;
+    long value = strtol(p, &end, 10);
+    if (end == p) {
+        *s = p;
+        return 0;
+    }
+    if (*end == '.' || *end == '-' || *end == '+') {
+        *s = end + 1;
+    } else {
+        *s = end;
+    }
+    return value;
+}
+
+static int compare_versions(const char *current, const char *candidate)
+{
+    if (!current || !candidate) {
+        return 0;
+    }
+    const char *cur = current;
+    const char *cand = candidate;
+    for (int i = 0; i < 4; ++i) {
+        long cur_v = read_version_component(&cur);
+        long cand_v = read_version_component(&cand);
+        if (cand_v > cur_v) {
+            return 1;
+        }
+        if (cand_v < cur_v) {
+            return -1;
+        }
+        if ((*cur == '\0' && *cand == '\0') || (!isdigit((unsigned char)*cur) && !isdigit((unsigned char)*cand))) {
+            break;
+        }
+    }
+    return 0;
+}
+
+static void dome_ota_reset_context(void)
+{
+    if (s_ota.handle) {
+        esp_ota_abort(s_ota.handle);
+        s_ota.handle = 0;
+    }
+    if (s_ota.sha_active) {
+        mbedtls_sha256_free(&s_ota.sha_ctx);
+        s_ota.sha_active = false;
+    }
+    s_ota.partition = NULL;
+    s_ota.bytes_written = 0;
+    s_ota.expected_size = 0;
+    memset(s_ota.expected_sha, 0, sizeof(s_ota.expected_sha));
+    memset(s_ota.expected_version, 0, sizeof(s_ota.expected_version));
+    s_ota.expect_size = false;
+    s_ota.status = DOME_OTA_STATUS_IDLE;
+    s_ota.error = 0;
+}
+
+static esp_err_t dome_ota_load_manifest(void)
+{
+    uint32_t expected_size = (uint32_t)regfile[DOME_REG_OTA_EXPECTED_SIZE_L] |
+                             ((uint32_t)regfile[DOME_REG_OTA_EXPECTED_SIZE_L + 1] << 8) |
+                             ((uint32_t)regfile[DOME_REG_OTA_EXPECTED_SIZE_L + 2] << 16) |
+                             ((uint32_t)regfile[DOME_REG_OTA_EXPECTED_SIZE_L + 3] << 24);
+
+    uint8_t expected_sha[32];
+    memcpy(expected_sha, &regfile[DOME_REG_OTA_EXPECTED_SHA], sizeof(expected_sha));
+
+    char version_buf[OTA_VERSION_MAX_LEN];
+    memset(version_buf, 0, sizeof(version_buf));
+    memcpy(version_buf, &regfile[DOME_REG_OTA_VERSION],
+           DOME_REG_OTA_VERSION_LEN < OTA_VERSION_MAX_LEN ? DOME_REG_OTA_VERSION_LEN : OTA_VERSION_MAX_LEN - 1);
+    version_buf[OTA_VERSION_MAX_LEN - 1] = '\0';
+
+    size_t version_len = strnlen(version_buf, sizeof(version_buf));
+    if (version_len == 0) {
+        ESP_LOGE(TAG, "Manifest version vide");
+        return ESP_ERR_INVALID_STATE;
+    }
+    for (size_t i = 0; i < version_len; ++i) {
+        if (!isprint((unsigned char)version_buf[i])) {
+            ESP_LOGE(TAG, "Manifest version invalide (caractère 0x%02x)", (unsigned char)version_buf[i]);
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    char message_buf[DOME_REG_OTA_STATUS_MSG_LEN + 1];
+    memset(message_buf, 0, sizeof(message_buf));
+    memcpy(message_buf, &regfile[DOME_REG_OTA_STATUS_MSG], DOME_REG_OTA_STATUS_MSG_LEN);
+    message_buf[DOME_REG_OTA_STATUS_MSG_LEN] = '\0';
+
+    s_ota.expected_size = expected_size;
+    s_ota.expect_size = expected_size != 0;
+    memcpy(s_ota.expected_sha, expected_sha, sizeof(expected_sha));
+    strncpy(s_ota.expected_version, version_buf, sizeof(s_ota.expected_version));
+    s_ota.expected_version[sizeof(s_ota.expected_version) - 1] = '\0';
+    s_ota.bytes_written = 0;
+
+    s_ota_state.flags &= ~(DOME_OTA_FLAG_HASH_OK | DOME_OTA_FLAG_HASH_FAIL | DOME_OTA_FLAG_APPLIED | DOME_OTA_FLAG_ROLLBACK);
+    s_ota_state.flags |= DOME_OTA_FLAG_META_READY;
+    dome_status_set_manifest(expected_size, expected_sha, version_buf);
+    if (message_buf[0]) {
+        dome_status_set_message(message_buf);
+    }
+    s_ota_state.error = 0;
+    s_ota_state.state = DOME_OTA_STATE_MANIFEST_ACCEPTED;
+    dome_status_commit();
+
+    ESP_LOGI(TAG, "Manifest chargé (taille=%u, version=%s)", expected_size, s_ota.expected_version);
+    return ESP_OK;
+}
+
+static void dome_ota_fail(esp_err_t err, const char *message, uint8_t set_flags, uint8_t clear_flags)
+{
+    ESP_LOGE(TAG, "OTA failure: %s", esp_err_to_name(err));
+    dome_ota_reset_context();
+    s_ota_state.flags &= ~(clear_flags | DOME_OTA_FLAG_APPLIED);
+    s_ota_state.flags |= set_flags;
+    dome_status_set(DOME_OTA_STATE_FAILED, (uint8_t)(err & 0xFF), message ? message : "OTA échouée");
+    regfile[DOME_REG_OTA_CMD] = DOME_OTA_CMD_IDLE;
+}
+
+static void dome_status_handle_boot(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) {
+        ESP_LOGE(TAG, "Partition active introuvable");
+        return;
+    }
+
+    esp_app_desc_t running_desc = {0};
+    esp_err_t err = esp_ota_get_partition_description(running, &running_desc);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Lecture description appli: %s", esp_err_to_name(err));
+        return;
+    }
+
+    esp_ota_img_states_t img_state = ESP_OTA_IMG_UNDEFINED;
+    err = esp_ota_get_state_partition(running, &img_state);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_ota_get_state_partition: %s", esp_err_to_name(err));
+        img_state = ESP_OTA_IMG_UNDEFINED;
+    }
+
+    bool have_expected = s_ota_state.version[0] != '\0';
+    bool version_match = have_expected &&
+                         strncmp(s_ota_state.version, running_desc.version, sizeof(running_desc.version)) == 0;
+
+    if (img_state == ESP_OTA_IMG_PENDING_VERIFY) {
+        if (!have_expected || version_match) {
+            dome_status_set(DOME_OTA_STATE_VERIFYING, 0, "Auto-test en cours");
+            esp_err_t mark = esp_ota_mark_app_valid_cancel_rollback();
+            if (mark == ESP_OK) {
+                s_ota_state.flags |= DOME_OTA_FLAG_APPLIED;
+                dome_status_set_manifest(s_ota_state.image_size, s_ota_state.sha256, running_desc.version);
+                s_ota_state.flags &= ~DOME_OTA_FLAG_ROLLBACK;
+                dome_status_set(DOME_OTA_STATE_SUCCESS, 0, "OTA validée");
+            } else {
+                ESP_LOGE(TAG, "esp_ota_mark_app_valid_cancel_rollback échoue: %s", esp_err_to_name(mark));
+                s_ota_state.flags &= ~DOME_OTA_FLAG_APPLIED;
+                dome_status_set(DOME_OTA_STATE_FAILED, (uint8_t)(mark & 0xFF), "Validation OTA échouée");
+            }
+        } else {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Rollback détecté (%s)", running_desc.version);
+            s_ota_state.flags |= DOME_OTA_FLAG_ROLLBACK;
+            dome_status_set(DOME_OTA_STATE_ROLLED_BACK, 0, msg);
+        }
+        return;
+    }
+
+    if (have_expected && !version_match) {
+        if (compare_versions(s_ota_state.version, running_desc.version) > 0) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Rollback vers %s", running_desc.version);
+            s_ota_state.flags |= DOME_OTA_FLAG_ROLLBACK;
+            dome_status_set(DOME_OTA_STATE_ROLLED_BACK, 0, msg);
+        } else {
+            dome_status_set_manifest(s_ota_state.image_size, s_ota_state.sha256, running_desc.version);
+            s_ota_state.flags |= DOME_OTA_FLAG_APPLIED;
+            s_ota_state.flags &= ~DOME_OTA_FLAG_ROLLBACK;
+            dome_status_set(DOME_OTA_STATE_SUCCESS, 0, "Version active mise à jour");
+        }
+        return;
+    }
+
+    if (img_state == ESP_OTA_IMG_VALID) {
+        if (!(s_ota_state.flags & DOME_OTA_FLAG_APPLIED)) {
+            s_ota_state.flags |= DOME_OTA_FLAG_APPLIED;
+        }
+        if (s_ota_state.state == DOME_OTA_STATE_PENDING_REBOOT ||
+            s_ota_state.state == DOME_OTA_STATE_VERIFYING ||
+            s_ota_state.state == DOME_OTA_STATE_MANIFEST_ACCEPTED) {
+            s_ota_state.flags &= ~DOME_OTA_FLAG_ROLLBACK;
+            dome_status_set(DOME_OTA_STATE_SUCCESS, 0, "OTA validée");
+            return;
+        }
+    }
+
+    dome_status_commit();
 }
 
 static void dome_assert_int(bool assert)
@@ -91,45 +504,23 @@ static bool therm_hard_active(void)
 #endif
 }
 
-static void dome_ota_reset(void)
-{
-    if (s_ota.status == DOME_OTA_STATUS_BUSY && s_ota.partition) {
-        esp_ota_end(s_ota.handle);
-    }
-    s_ota.partition = NULL;
-    s_ota.handle = 0;
-    s_ota.bytes_written = 0;
-    s_ota.status = DOME_OTA_STATUS_IDLE;
-    s_ota.error = 0;
-    regfile[DOME_REG_OTA_STATUS] = s_ota.status;
-    regfile[DOME_REG_OTA_ERROR] = s_ota.error;
-    regfile[DOME_REG_OTA_CMD] = DOME_OTA_CMD_IDLE;
-}
-
-static void dome_ota_fail(esp_err_t err)
-{
-    ESP_LOGE(TAG, "OTA failure: %s", esp_err_to_name(err));
-    if (s_ota.status == DOME_OTA_STATUS_BUSY) {
-        esp_ota_end(s_ota.handle);
-    }
-    s_ota.status = DOME_OTA_STATUS_ERROR;
-    s_ota.error = (uint8_t)(err & 0xFF);
-    regfile[DOME_REG_OTA_STATUS] = s_ota.status;
-    regfile[DOME_REG_OTA_ERROR] = s_ota.error;
-    regfile[DOME_REG_OTA_CMD] = DOME_OTA_CMD_IDLE;
-}
-
 static void dome_ota_handle_data(const uint8_t *data, size_t len)
 {
-    if (s_ota.status != DOME_OTA_STATUS_BUSY) {
+    if (s_ota_state.state != DOME_OTA_STATE_DOWNLOADING || !s_ota.handle || len == 0) {
         return;
     }
     esp_err_t err = esp_ota_write(s_ota.handle, data, len);
     if (err != ESP_OK) {
-        dome_ota_fail(err);
+        dome_ota_fail(err, "Écriture OTA échouée", 0, DOME_OTA_FLAG_HASH_OK);
         return;
     }
+    if (s_ota.sha_active) {
+        mbedtls_sha256_update(&s_ota.sha_ctx, data, len);
+    }
     s_ota.bytes_written += len;
+    if (s_ota.expect_size && s_ota.bytes_written > s_ota.expected_size) {
+        dome_ota_fail(ESP_ERR_INVALID_SIZE, "Taille manifeste dépassée", DOME_OTA_FLAG_HASH_FAIL, DOME_OTA_FLAG_HASH_OK);
+    }
 }
 
 static void dome_ota_handle_command(uint8_t cmd)
@@ -138,44 +529,97 @@ static void dome_ota_handle_command(uint8_t cmd)
         return;
     }
     if (cmd == DOME_OTA_CMD_BEGIN) {
-        dome_ota_reset();
+        if (!(regfile[DOME_REG_OTA_FLAGS] & DOME_OTA_FLAG_META_READY)) {
+            dome_ota_fail(ESP_ERR_INVALID_STATE, "Manifest absent", 0, DOME_OTA_FLAG_HASH_OK | DOME_OTA_FLAG_HASH_FAIL);
+            return;
+        }
+        esp_err_t err = dome_ota_load_manifest();
+        if (err != ESP_OK) {
+            dome_ota_fail(err, "Manifest invalide", DOME_OTA_FLAG_HASH_FAIL, DOME_OTA_FLAG_HASH_OK);
+            return;
+        }
+        dome_ota_reset_context();
         s_ota.partition = esp_ota_get_next_update_partition(NULL);
         if (!s_ota.partition) {
-            dome_ota_fail(ESP_ERR_NOT_FOUND);
+            dome_ota_fail(ESP_ERR_NOT_FOUND, "Partition OTA introuvable", 0, DOME_OTA_FLAG_HASH_OK);
             return;
         }
-        esp_err_t err = esp_ota_begin(s_ota.partition, OTA_SIZE_UNKNOWN, &s_ota.handle);
+        err = esp_ota_begin(s_ota.partition, OTA_SIZE_UNKNOWN, &s_ota.handle);
         if (err != ESP_OK) {
-            dome_ota_fail(err);
+            dome_ota_fail(err, "esp_ota_begin échoue", 0, DOME_OTA_FLAG_HASH_OK);
             return;
         }
-        s_ota.status = DOME_OTA_STATUS_BUSY;
-        s_ota.error = 0;
-        regfile[DOME_REG_OTA_STATUS] = s_ota.status;
-        regfile[DOME_REG_OTA_ERROR] = s_ota.error;
+        mbedtls_sha256_init(&s_ota.sha_ctx);
+        mbedtls_sha256_starts(&s_ota.sha_ctx, 0);
+        s_ota.sha_active = true;
+        s_ota.bytes_written = 0;
+        dome_status_set(DOME_OTA_STATE_DOWNLOADING, 0, "Réception en cours");
     } else if (cmd == DOME_OTA_CMD_WRITE) {
-        // no-op: writes are handled immediately when data lands in buffer
+        // no-op
     } else if (cmd == DOME_OTA_CMD_COMMIT) {
-        if (s_ota.status != DOME_OTA_STATUS_BUSY) {
+        if (!s_ota.handle) {
+            dome_ota_fail(ESP_ERR_INVALID_STATE, "OTA non initialisée", 0, DOME_OTA_FLAG_HASH_OK);
+            return;
+        }
+        uint8_t digest[32];
+        if (s_ota.sha_active) {
+            mbedtls_sha256_finish(&s_ota.sha_ctx, digest);
+            mbedtls_sha256_free(&s_ota.sha_ctx);
+            s_ota.sha_active = false;
+        } else {
+            memset(digest, 0, sizeof(digest));
+        }
+        if (memcmp(digest, s_ota.expected_sha, sizeof(digest)) != 0) {
+            dome_ota_fail(ESP_ERR_INVALID_CRC, "Hash SHA-256 invalide", DOME_OTA_FLAG_HASH_FAIL, DOME_OTA_FLAG_HASH_OK);
+            return;
+        }
+        if (s_ota.expect_size && s_ota.bytes_written != s_ota.expected_size) {
+            dome_ota_fail(ESP_ERR_INVALID_SIZE, "Taille inattendue", DOME_OTA_FLAG_HASH_FAIL, DOME_OTA_FLAG_HASH_OK);
             return;
         }
         esp_err_t err = esp_ota_end(s_ota.handle);
+        s_ota.handle = 0;
         if (err != ESP_OK) {
-            dome_ota_fail(err);
+            dome_ota_fail(err, "esp_ota_end échoue", 0, DOME_OTA_FLAG_HASH_OK);
             return;
         }
+        esp_app_desc_t new_desc = {0};
+        err = esp_ota_get_image_desc(s_ota.partition, &new_desc);
+        if (err != ESP_OK) {
+            dome_ota_fail(err, "Lecture desc image échoue", 0, DOME_OTA_FLAG_HASH_OK);
+            return;
+        }
+        if (strncmp(new_desc.version, s_ota.expected_version, sizeof(new_desc.version)) != 0) {
+            dome_ota_fail(ESP_ERR_INVALID_RESPONSE, "Version manifest ≠ binaire", DOME_OTA_FLAG_HASH_FAIL, DOME_OTA_FLAG_HASH_OK);
+            return;
+        }
+        const esp_partition_t *running = esp_ota_get_running_partition();
+        if (running) {
+            esp_app_desc_t running_desc = {0};
+            if (esp_ota_get_partition_description(running, &running_desc) == ESP_OK) {
+                if (compare_versions(running_desc.version, new_desc.version) >= 0) {
+                    dome_ota_fail(ESP_ERR_INVALID_STATE, "Version non monotone", DOME_OTA_FLAG_HASH_FAIL, DOME_OTA_FLAG_HASH_OK);
+                    return;
+                }
+            }
+        }
+        s_ota_state.flags |= DOME_OTA_FLAG_HASH_OK;
+        s_ota_state.flags &= ~DOME_OTA_FLAG_HASH_FAIL;
+        s_ota_state.flags &= ~DOME_OTA_FLAG_ROLLBACK;
+        dome_status_set(DOME_OTA_STATE_READY, 0, "Image validée");
+
         err = esp_ota_set_boot_partition(s_ota.partition);
         if (err != ESP_OK) {
-            dome_ota_fail(err);
+            dome_ota_fail(err, "Sélection partition échoue", 0, DOME_OTA_FLAG_HASH_OK);
             return;
         }
-        s_ota.status = DOME_OTA_STATUS_DONE;
-        regfile[DOME_REG_OTA_STATUS] = s_ota.status;
-        regfile[DOME_REG_OTA_ERROR] = 0;
-        vTaskDelay(pdMS_TO_TICKS(200));
-        esp_restart();
+        s_ota_state.flags |= DOME_OTA_FLAG_APPLIED;
+        dome_status_set(DOME_OTA_STATE_PENDING_REBOOT, 0, "Redémarrage requis");
+        dome_ota_reset_context();
     } else if (cmd == DOME_OTA_CMD_ABORT) {
-        dome_ota_reset();
+        dome_ota_reset_context();
+        s_ota_state.flags &= ~(DOME_OTA_FLAG_HASH_OK | DOME_OTA_FLAG_HASH_FAIL | DOME_OTA_FLAG_APPLIED);
+        dome_status_set(DOME_OTA_STATE_FAILED, 0, "OTA annulée");
     }
     regfile[DOME_REG_OTA_CMD] = DOME_OTA_CMD_IDLE;
 }
@@ -375,6 +819,22 @@ static void dome_handle_write(uint8_t reg, const uint8_t *data, size_t len)
         dome_ota_handle_data(&regfile[write_start], chunk_len);
     }
 
+    bool message_changed = range_intersects(reg, len, DOME_REG_OTA_STATUS_MSG, DOME_REG_OTA_STATUS_MSG_LEN);
+    bool flags_changed = range_intersects(reg, len, DOME_REG_OTA_FLAGS, 1);
+
+    if (message_changed) {
+        char msg_buf[DOME_REG_OTA_STATUS_MSG_LEN + 1];
+        memset(msg_buf, 0, sizeof(msg_buf));
+        memcpy(msg_buf, &regfile[DOME_REG_OTA_STATUS_MSG], DOME_REG_OTA_STATUS_MSG_LEN);
+        dome_status_set_message(msg_buf);
+    }
+    if (flags_changed) {
+        s_ota_state.flags = regfile[DOME_REG_OTA_FLAGS];
+    }
+    if (message_changed || flags_changed) {
+        dome_status_commit();
+    }
+
     if (range_intersects(reg, len, DOME_REG_BLOCK_OTA_CTRL, DOME_REG_BLOCK_OTA_CTRL_LEN)) {
         dome_ota_handle_command(regfile[DOME_REG_OTA_CMD]);
     }
@@ -442,7 +902,8 @@ void app_main(void)
     regfile[DOME_REG_UVB_PERIOD_S] = 60;
     regfile[DOME_REG_UVB_DUTY_PM] = 25; // 1000 permille approx
     regfile[DOME_REG_SKY_CFG] = 0;
-    dome_ota_reset();
+    dome_status_load();
+    dome_status_handle_boot();
     dome_update_diagnostics();
 
     xTaskCreatePinnedToCore(telemetry_task, "telemetry", 4096, NULL, 6, NULL, 0);
