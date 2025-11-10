@@ -1,9 +1,11 @@
 #include "httpd.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <inttypes.h>
 #include "esp_https_server.h"
 #include "esp_log.h"
@@ -165,16 +167,30 @@ static const char ROOT_HTML[] =
     "border-bottom:1px solid rgba(255,255,255,0.08);}#statusBanner{padding:12px;border-radius:12px;margin-bottom:16px;font-weight:600;}"
     "#statusBanner.error{background:rgba(220,53,69,0.15);color:#ffb4c0;}#statusBanner.ok{background:rgba(40,167,69,0.18);color:#b7ffce;}"
     "progress{width:100%;height:16px;border-radius:12px;overflow:hidden;background:rgba(255,255,255,0.1);}progress::-webkit-progress-bar{background:transparent;}"
-    "progress::-webkit-progress-value{background:#3a86ff;}details{margin-top:12px;}summary{cursor:pointer;font-weight:600;}"
+    "progress::-webkit-progress-value{background:#3a86ff;}details{margin-top:12px;}summary{cursor:pointer;font-weight:600;}#speciesMetadata strong{display:block;font-size:0.8rem;color:rgba(255,255,255,0.72);}#speciesMetadata span{display:block;margin-top:2px;font-weight:600;}#speciesMetadata h3{margin:0 0 8px;font-size:1rem;}"
     ".ota-block{margin-top:12px;padding:12px;border-radius:12px;background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.08);}""
     " .ota-block h3{margin:0 0 8px;font-size:1.1rem;} .ota-status-line{font-size:0.85rem;margin-top:6px;color:rgba(255,255,255,0.8);}""
     " .ota-status-line span{display:block;margin-top:2px;word-break:break-all;}""</style></head><body>"
     "<h1>Terrarium S3</h1>"
     "<div id='statusBanner' class='ok'></div>"
-    "<section><label for='languageSelect' data-i18n='language'></label><select id='languageSelect'><option value='fr'>Français</option><option value='en'>English</option><option value='es'>Español</option></select>"
+    "<section><label for='languageSelect' data-i18n='language'></label><select id='languageSelect'></select>"
     "<label for='speciesSelect' data-i18n='species_profile'></label><select id='speciesSelect'></select><button id='applySpecies' data-i18n='apply_profile'></button>"
-    "<details><summary data-i18n='custom_profile'></summary><div><label data-i18n='profile_name'></label><input id='customName' placeholder='My species'>"
+    "<div id='speciesMetadata' style='display:none;margin-top:12px;padding:12px;border-radius:12px;background:rgba(255,255,255,0.05);'>"
+    "<h3 data-i18n='profile_details'></h3>"
+    "<div><strong data-i18n='profile_common_name'></strong><span id='metaName'></span></div>"
+    "<div><strong data-i18n='profile_type'></strong><span id='metaType'></span></div>"
+    "<div><strong data-i18n='metadata_habitat'></strong><span id='metaHabitat'></span></div>"
+    "<div><strong data-i18n='metadata_uv_category'></strong><span id='metaUVCategory'></span></div>"
+    "<div><strong data-i18n='metadata_uv_peak'></strong><span id='metaUVPeak'></span></div>"
+    "<div><strong data-i18n='metadata_season'></strong><span id='metaSeason'></span></div></div>"
+    "<div class='species-actions' style='display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;'><button id='exportSpecies' class='secondary' data-i18n='export_profiles'></button>"
+    "<button id='importSpeciesBtn' class='secondary' data-i18n='import_profiles'></button><input id='importSpeciesFile' type='file' accept='.json,application/json' style='display:none'></div>"
+    "<details><summary data-i18n='custom_profile'></summary><div><label data-i18n='profile_name'></label><input id='customName' placeholder='My species' data-i18n-placeholder='custom_name_hint'>"
     "<textarea id='customSchedule' rows='8' style='width:100%;border-radius:10px;padding:10px;background:rgba(255,255,255,0.08);color:#fefefe;' data-i18n-placeholder='custom_schedule_hint'></textarea>"
+    "<label data-i18n='metadata_habitat'></label><input id='customHabitat' data-i18n-placeholder='metadata_habitat_hint'>"
+    "<label data-i18n='metadata_uv_category'></label><input id='customUVCategory' data-i18n-placeholder='metadata_uv_category_hint'>"
+    "<label data-i18n='metadata_uv_peak'></label><input id='customUVPeak' type='number' step='0.1' data-i18n-placeholder='metadata_uv_peak_hint'>"
+    "<label data-i18n='metadata_season'></label><input id='customSeason' data-i18n-placeholder='metadata_season_hint'>"
     "<button id='saveCustom' data-i18n='save_custom'></button></div></details></section>"
     "<section><h2 data-i18n='light_control'></h2><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;'>"
     "<div><label data-i18n='cct_day'></label><input id='cctDay' type='number' min='0' max='10000'><label data-i18n='cct_warm'></label><input id='cctWarm' type='number' min='0' max='10000'></div>"
@@ -186,15 +202,9 @@ static const char ROOT_HTML[] =
     "<section><h2 data-i18n='telemetry'></h2><div id='chartContainer'><canvas id='telemetryChart'></canvas></div>"
     "<table><thead><tr><th data-i18n='metric'></th><th data-i18n='value'></th></tr></thead><tbody id='telemetryTable'></tbody></table></section>"
     "<section><h2 data-i18n='ota_updates'></h2><div class='ota-block'><h3 data-i18n='controller_title'></h3><label data-i18n='controller_manifest'></label><input id='controllerManifest' type='file' accept='.json'><label data-i18n='controller_fw'></label><input id='controllerBin' type='file' accept='.bin'><progress id='controllerProgress' value='0' max='100'></progress><div class='ota-status-line'><strong data-i18n='ota_status_label'></strong><span id='controllerStatusText'>--</span></div><button id='flashController' data-i18n='flash_controller'></button></div><div class='ota-block'><h3 data-i18n='dome_title'></h3><label data-i18n='dome_manifest'></label><input id='domeManifest' type='file' accept='.json'><label data-i18n='dome_fw'></label><input id='domeBin' type='file' accept='.bin'><progress id='domeProgress' value='0' max='100'></progress><div class='ota-status-line'><strong data-i18n='ota_status_label'></strong><span id='domeStatusText'>--</span></div><button id='flashDome' data-i18n='flash_dome'></button></div></section>"
-    "<section><h2 data-i18n='alarms'></h2><button id='toggleMute'></button><div id='alarmState'></div></section>"
+    "<section><h2 data-i18n='alarms'></h2><button id='toggleMute' data-i18n='mute_toggle'></button><div id='alarmState'></div></section>"
     "<section><h2 data-i18n='calibration'></h2><label data-i18n='uvi_max'></label><input id='calUviMax' type='number' step='0.1'><label data-i18n='cal_duty'></label><input id='calDuty' type='number'><label data-i18n='cal_measured'></label><input id='calMeasured' type='number' step='0.01'><button id='applyCalibration' data-i18n='apply_calibration'></button></section>"
-    "<script>const I18N={fr:{language:'Langue',species_profile:'Profil d\'espèce',apply_profile:'Appliquer le profil',custom_profile:'Profil personnalisé',profile_name:'Nom du profil',save_custom:'Enregistrer',custom_schedule_hint:'JSON climate_schedule_t',light_control:'Contrôle lumineux',cct_day:'CCT Jour (‰)',cct_warm:'CCT Chaud (‰)',uva_set:'UVA consigne (‰)',uva_clamp:'UVA limite (‰)',uvb_set:'UVB consigne (‰)',uvb_clamp:'UVB limite (‰)',uvb_period:'Période UVB (s)',uvb_duty:'Duty UVB (‰)',sky_mode:'Mode ciel',apply_light:'Appliquer',telemetry:'Télémétries en temps réel',metric:'Mesure',value:'Valeur',ota_updates:'Mises à jour OTA',controller_title:'Contrôleur',controller_manifest:'Manifeste contrôleur (.json signé)',controller_fw:'Firmware contrôleur (.bin)',flash_controller:'Flasher contrôleur',dome_title:'Dôme',dome_manifest:'Manifeste dôme (.json signé)',dome_fw:'Firmware dôme (.bin)',flash_dome:'Flasher dôme',ota_status_label:'Statut OTA',manifest_required:'Manifeste requis',firmware_required:'Fichier firmware requis',alarms:'Alarmes',apply_calibration:'Enregistrer calibration',calibration:'Calibration UVB',uvi_max:'UVI cible',cal_duty:'Duty mesuré (‰)',cal_measured:'UVI mesuré',uvi_fault:'Capteur UVI en défaut'},en:{language:'Language',species_profile:'Species profile',apply_profile:'Apply profile',custom_profile:'Custom profile',profile_name:'Profile name',save_custom:'Save custom profile',custom_schedule_hint:'climate_schedule_t JSON payload',light_control:'Lighting control',cct_day:'CCT Day (‰)',cct_warm:'CCT Warm (‰)',uva_set:'UVA setpoint (‰)',uva_clamp:'UVA clamp (‰)',uvb_set:'UVB setpoint (‰)',uvb_clamp:'UVB clamp (‰)',uvb_period:'UVB period (s)',uvb_duty:'UVB duty (‰)',sky_mode:'Sky mode',apply_light:'Apply',telemetry:'Real-time telemetry',metric:'Metric',value:'Value',ota_updates:'OTA updates',controller_title:'Controller',controller_manifest:'Controller manifest (signed .json)',controller_fw:'Controller firmware (.bin)',flash_controller:'Flash controller',dome_title:'Dome',dome_manifest:'Dome manifest (signed .json)',dome_fw:'Dome firmware (.bin)',flash_dome:'Flash dome',ota_status_label:'OTA status',manifest_required:'Manifest required',firmware_required:'Firmware file required',alarms:'Alarms',apply_calibration:'Apply calibration',calibration:'UVB calibration',uvi_max:'Target UVI',cal_duty:'Duty measured (‰)',cal_measured:'Measured UVI',uvi_fault:'UVI sensor fault'},es:{language:'Idioma',species_profile:'Perfil de especie',apply_profile:'Aplicar perfil',custom_profile:'Perfil personalizado',profile_name:'Nombre del perfil',save_custom:'Guardar personalizado',custom_schedule_hint:'JSON climate_schedule_t',light_control:'Control lumínico',cct_day:'CCT Día (‰)',cct_warm:'CCT Cálido (‰)',uva_set:'UVA consigna (‰)',uva_clamp:'UVA límite (‰)',uvb_set:'UVB consigna (‰)',uvb_clamp:'UVB límite (‰)',uvb_period:'Periodo UVB (s)',uvb_duty:'Duty UVB (‰)',sky_mode:'Modo cielo',apply_light:'Aplicar',telemetry:'Telemetría en tiempo real',metric:'Métrica',value:'Valor',ota_updates:'Actualizaciones OTA',controller_title:'Controlador',controller_manifest:'Manifiesto controlador (.json firmado)',controller_fw:'Firmware controlador (.bin)',flash_controller:'Flashear controlador',dome_title:'Cúpula',dome_manifest:'Manifiesto cúpula (.json firmado)',dome_fw:'Firmware cúpula (.bin)',flash_dome:'Flashear cúpula',ota_status_label:'Estado OTA',manifest_required:'Manifiesto requerido',firmware_required:'Archivo de firmware requerido',alarms:'Alarmas',apply_calibration:'Guardar calibración',calibration:'Calibración UVB',uvi_max:'UVI objetivo',cal_duty:'Duty medido (‰)',cal_measured:'UVI medido',uvi_fault:'Sensor UVI en fallo'}};let lang='fr';const banner=document.getElementById('statusBanner');function setLang(l){lang=l;const dict=I18N[l]||I18N.fr;document.querySelectorAll('[data-i18n]').forEach(el=>{const k=el.getAttribute('data-i18n');if(dict[k])el.textContent=dict[k];});document.querySelectorAll('[data-i18n-placeholder]').forEach(el=>{const k=el.getAttribute('data-i18n-placeholder');if(dict[k])el.setAttribute('placeholder',dict[k]);});document.getElementById('toggleMute').textContent=dict.alarms+' – mute';}async function fetchJSON(url,opts){const r=await fetch(url,opts);if(!r.ok) throw new Error(await r.text());return r.json();}function permilleFromReg(v){return v*40;}function regFromPermille(p){return Math.min(255,Math.max(0,Math.round(p/40)));}function encodeManifest(text){return btoa(unescape(encodeURIComponent(text)));}function describeOta(entry){if(!entry)return'--';const parts=[];if(entry.version)parts.push(entry.version);if(entry.message)parts.push(entry.message);else if(entry.state)parts.push(entry.state);if(entry.sha256)parts.push(entry.sha256.slice(0,8)+'…');return parts.join(' • ');}function updateBanner(text,isErr){banner.textContent=text;banner.className=isErr?'error':'ok';}const chartCtx=document.getElementById('telemetryChart').getContext('2d');const chartState={points:[]};function renderChart(){const ctx=chartCtx;const {width,height}=ctx.canvas;ctx.clearRect(0,0,width,height);ctx.strokeStyle='#2dd4ff';ctx.lineWidth=2;ctx.beginPath();chartState.points.forEach((p,i)=>{const x=width*(i/(chartState.points.length-1||1));const y=height*(1-p.tempNorm);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();ctx.strokeStyle='#fbbf24';ctx.beginPath();chartState.points.forEach((p,i)=>{const x=width*(i/(chartState.points.length-1||1));const y=height*(1-p.humNorm);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();}async function refreshSpecies(){const data=await fetchJSON('/api/species');const select=document.getElementById('speciesSelect');select.innerHTML='';const addOpt=(key,label)=>{const o=document.createElement('option');o.value=key;o.textContent=label;select.appendChild(o);};data.builtin.forEach(p=>{const label=(I18N[lang]?I18N[lang].species_profile: 'Profile')+': '+(p.labels[lang]||p.labels.fr);addOpt(p.key,(p.labels[lang]||p.labels.fr));});data.custom.forEach(p=>addOpt(p.key,p.name+' (custom)'));if(data.active_key)select.value=data.active_key;}async function refreshStatus(){try{const status=await fetchJSON('/api/status');const dict=I18N[lang]||I18N.fr;updateBanner(status.summary,false);document.getElementById('cctDay').value=status.light.cct.day;document.getElementById('cctWarm').value=status.light.cct.warm;document.getElementById('uvaSet').value=status.light.uva.set;document.getElementById('uvaClamp').value=status.light.uva.clamp;document.getElementById('uvbSet').value=status.light.uvb.set;document.getElementById('uvbClamp').value=status.light.uvb.clamp;document.getElementById('uvbPeriod').value=status.light.uvb.period_s;document.getElementById('uvbDuty').value=status.light.uvb.duty_pm;document.getElementById('skyMode').value=status.light.sky;document.getElementById('alarmState').textContent=status.alarms.muted?'Muted':'Active';document.getElementById('calUviMax').value=status.calibration.uvi_max.toFixed(2);document.getElementById('calDuty').value=status.calibration.last_duty_pm.toFixed(0);document.getElementById('calMeasured').value=status.calibration.last_uvi.toFixed(2);const table=document.getElementById('telemetryTable');table.innerHTML='';const uviValid=status.climate&&status.climate.uvi_valid;const uviFault=status.dome&&status.dome.uvi_fault;let uviText='--';if(uviValid){uviText=status.climate.uvi_measured.toFixed(2)+' (Δ '+status.climate.uvi_error.toFixed(2)+', '+status.climate.irradiance_uW_cm2.toFixed(1)+' µW/cm²)';}else if(uviFault){const faultText=dict.uvi_fault||'sensor fault';uviText=faultText;}else{uviText=status.env.uvi!==undefined?status.env.uvi.toFixed(2):'--';}const irrText=status.env.irradiance_uW_cm2!==undefined?status.env.irradiance_uW_cm2.toFixed(1):'--';const rows=[['Temp °C',status.env.temperature.toFixed(1)],['Hum %',status.env.humidity.toFixed(1)],['Press hPa',status.env.pressure.toFixed(1)],['UVI',uviText],['Irr µW/cm²',irrText],['Fan %',status.light.fan_pwm.toFixed(0)],['Heatsink °C',status.dome.heatsink_c.toFixed(1)]];rows.forEach(([k,v])=>{const tr=document.createElement('tr');const td1=document.createElement('td');td1.textContent=k;const td2=document.createElement('td');td2.textContent=v;tr.appendChild(td1);tr.appendChild(td2);table.appendChild(tr);});        const ota=status.ota||{};
-        const controllerStatus=document.getElementById('controllerStatusText');
-        if(controllerStatus)controllerStatus.textContent=describeOta(ota.controller);
-        const domeStatus=document.getElementById('domeStatusText');
-        if(domeStatus)domeStatus.textContent=describeOta(ota.dome);
-chartState.points.push({tempNorm:Math.min(1,Math.max(0,(status.env.temperature-10)/30)),humNorm:Math.min(1,Math.max(0,status.env.humidity/100))});if(chartState.points.length>120)chartState.points.shift();renderChart();}catch(e){updateBanner('Status error: '+e.message,true);}}
-    "document.getElementById('languageSelect').addEventListener('change',e=>{setLang(e.target.value);refreshSpecies();});document.getElementById('applyLight').addEventListener('click',async()=>{const payload={cct:{day:+cctDay.value,warm:+cctWarm.value},uva:{set:+uvaSet.value,clamp:+uvaClamp.value},uvb:{set:+uvbSet.value,clamp:+uvbClamp.value,period_s:+uvbPeriod.value,duty_pm:+uvbDuty.value},sky:+skyMode.value};await fetchJSON('/api/light/dome0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refreshStatus();});document.getElementById('applySpecies').addEventListener('click',async()=>{const key=document.getElementById('speciesSelect').value;await fetchJSON('/api/species/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});refreshSpecies();});document.getElementById('saveCustom').addEventListener('click',async()=>{const name=document.getElementById('customName').value.trim();if(!name){alert('Name required');return;}try{const schedule=JSON.parse(document.getElementById('customSchedule').value);await fetchJSON('/api/species/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,schedule})});refreshSpecies();}catch(err){alert('Invalid JSON: '+err.message);}});document.getElementById('toggleMute').addEventListener('click',async()=>{const r=await fetchJSON('/api/alarms/mute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:true})});document.getElementById('alarmState').textContent=r.muted?'Muted':'Active';});document.getElementById('applyCalibration').addEventListener('click',async()=>{await fetchJSON('/api/calibrate/uvb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duty_pm:+calDuty.value,uvi:+calMeasured.value,uvi_max:+calUviMax.value})});refreshStatus();});async function uploadFirmware(manifestId,binId,url,progressId){const dict=I18N[lang]||I18N.fr;const manifest=document.getElementById(manifestId).files[0];if(!manifest){alert(dict.manifest_required||'Manifest required');return;}const file=document.getElementById(binId).files[0];if(!file){alert(dict.firmware_required||'Firmware required');return;}const manifestText=await manifest.text();const progress=document.getElementById(progressId);if(progress)progress.value=0;const res=await fetch(url,{method:'POST',headers:{'X-OTA-Manifest':encodeManifest(manifestText),'Content-Type':'application/octet-stream'},body:file});if(!res.ok){throw new Error(await res.text());}if(progress)progress.value=100;try{await res.json();}catch(e){}await refreshStatus();}document.getElementById('flashController').addEventListener('click',()=>uploadFirmware('controllerManifest','controllerBin','/api/ota/controller','controllerProgress').catch(e=>alert(e.message)));document.getElementById('flashDome').addEventListener('click',()=>uploadFirmware('domeManifest','domeBin','/api/ota/dome','domeProgress').catch(e=>alert(e.message)));setLang('fr');refreshSpecies();refreshStatus();setInterval(refreshStatus,5000);</script></body></html>";
+    "<script>const I18N = {\n  fr: {\n    language: 'Langue',\n    species_profile: 'Profil d\\'esp\xe8ce',\n    apply_profile: 'Appliquer le profil',\n    custom_profile: 'Profil personnalis\xe9',\n    custom_profile_short: 'perso',\n    profile_name: 'Nom du profil',\n    custom_name_hint: 'Nom du profil personnalis\xe9',\n    save_custom: 'Enregistrer',\n    save_success: 'Profil enregistr\xe9',\n    save_error: '\xc9chec de l\\'enregistrement',\n    name_required: 'Nom requis',\n    invalid_json: 'JSON invalide',\n    species_error: 'Erreur esp\xe8ces',\n    status_error: 'Erreur statut',\n    custom_schedule_hint: 'JSON climate_schedule_t',\n    metadata_habitat: 'Habitat',\n    metadata_habitat_hint: 'Ex : For\xeat tropicale, d\xe9sert\u2026',\n    metadata_uv_category: 'Cat\xe9gorie UV',\n    metadata_uv_category_hint: 'Indice Ferguson / UVB',\n    metadata_uv_peak: 'Pic UV index',\n    metadata_uv_peak_hint: 'Valeur num\xe9rique (ex : 6.5)',\n    metadata_season: 'Cycle saisonnier',\n    metadata_season_hint: 'Ex : Saison s\xe8che / humide',\n    metadata_unknown: '\u2014',\n    profile_details: 'D\xe9tails du profil',\n    profile_common_name: 'Nom commun',\n    profile_type: 'Type',\n    export_profiles: 'Exporter profils',\n    import_profiles: 'Importer profils',\n    import_success: 'Import r\xe9ussi',\n    import_error: 'Import invalide',\n    light_control: 'Contr\xf4le lumineux',\n    cct_day: 'CCT Jour (\u2030)',\n    cct_warm: 'CCT Chaud (\u2030)',\n    uva_set: 'UVA consigne (\u2030)',\n    uva_clamp: 'UVA limite (\u2030)',\n    uvb_set: 'UVB consigne (\u2030)',\n    uvb_clamp: 'UVB limite (\u2030)',\n    uvb_period: 'P\xe9riode UVB (s)',\n    uvb_duty: 'Duty UVB (\u2030)',\n    sky_mode: 'Mode ciel',\n    apply_light: 'Appliquer',\n    telemetry: 'T\xe9l\xe9m\xe9tries en temps r\xe9el',\n    metric: 'Mesure',\n    value: 'Valeur',\n    ota_updates: 'Mises \xe0 jour OTA',\n    controller_title: 'Contr\xf4leur',\n    controller_manifest: 'Manifeste contr\xf4leur (.json sign\xe9)',\n    controller_fw: 'Firmware contr\xf4leur (.bin)',\n    flash_controller: 'Flasher contr\xf4leur',\n    dome_title: 'D\xf4me',\n    dome_manifest: 'Manifeste d\xf4me (.json sign\xe9)',\n    dome_fw: 'Firmware d\xf4me (.bin)',\n    flash_dome: 'Flasher d\xf4me',\n    ota_status_label: 'Statut OTA',\n    manifest_required: 'Manifeste requis',\n    firmware_required: 'Fichier firmware requis',\n    alarms: 'Alarmes',\n    mute_toggle: 'Basculer mute',\n    alarms_muted: 'Muet',\n    alarms_active: 'Actif',\n    apply_calibration: 'Enregistrer calibration',\n    calibration: 'Calibration UVB',\n    uvi_max: 'UVI cible',\n    cal_duty: 'Duty mesur\xe9 (\u2030)',\n    cal_measured: 'UVI mesur\xe9',\n    uvi_fault: 'Capteur UVI en d\xe9faut'\n  },\n  en: {\n    language: 'Language',\n    species_profile: 'Species profile',\n    apply_profile: 'Apply profile',\n    custom_profile: 'Custom profile',\n    custom_profile_short: 'custom',\n    profile_name: 'Profile name',\n    custom_name_hint: 'Custom profile name',\n    save_custom: 'Save custom profile',\n    save_success: 'Profile saved',\n    save_error: 'Save failed',\n    name_required: 'Name required',\n    invalid_json: 'Invalid JSON',\n    species_error: 'Species error',\n    status_error: 'Status error',\n    custom_schedule_hint: 'climate_schedule_t JSON payload',\n    metadata_habitat: 'Habitat',\n    metadata_habitat_hint: 'e.g. tropical forest, desert\u2026',\n    metadata_uv_category: 'UV category',\n    metadata_uv_category_hint: 'Ferguson zone / UV class',\n    metadata_uv_peak: 'UV index peak',\n    metadata_uv_peak_hint: 'Numeric value (e.g. 6.5)',\n    metadata_season: 'Seasonal cycle',\n    metadata_season_hint: 'e.g. Dry / wet season',\n    metadata_unknown: '\u2014',\n    profile_details: 'Profile details',\n    profile_common_name: 'Common name',\n    profile_type: 'Type',\n    export_profiles: 'Export profiles',\n    import_profiles: 'Import profiles',\n    import_success: 'Import succeeded',\n    import_error: 'Import failed',\n    light_control: 'Lighting control',\n    cct_day: 'CCT Day (\u2030)',\n    cct_warm: 'CCT Warm (\u2030)',\n    uva_set: 'UVA setpoint (\u2030)',\n    uva_clamp: 'UVA clamp (\u2030)',\n    uvb_set: 'UVB setpoint (\u2030)',\n    uvb_clamp: 'UVB clamp (\u2030)',\n    uvb_period: 'UVB period (s)',\n    uvb_duty: 'UVB duty (\u2030)',\n    sky_mode: 'Sky mode',\n    apply_light: 'Apply',\n    telemetry: 'Real-time telemetry',\n    metric: 'Metric',\n    value: 'Value',\n    ota_updates: 'OTA updates',\n    controller_title: 'Controller',\n    controller_manifest: 'Controller manifest (signed .json)',\n    controller_fw: 'Controller firmware (.bin)',\n    flash_controller: 'Flash controller',\n    dome_title: 'Dome',\n    dome_manifest: 'Dome manifest (signed .json)',\n    dome_fw: 'Dome firmware (.bin)',\n    flash_dome: 'Flash dome',\n    ota_status_label: 'OTA status',\n    manifest_required: 'Manifest required',\n    firmware_required: 'Firmware file required',\n    alarms: 'Alarms',\n    mute_toggle: 'Toggle mute',\n    alarms_muted: 'Muted',\n    alarms_active: 'Active',\n    apply_calibration: 'Apply calibration',\n    calibration: 'UVB calibration',\n    uvi_max: 'Target UVI',\n    cal_duty: 'Measured duty (\u2030)',\n    cal_measured: 'Measured UVI',\n    uvi_fault: 'UVI sensor fault'\n  },\n  es: {\n    language: 'Idioma',\n    species_profile: 'Perfil de especie',\n    apply_profile: 'Aplicar perfil',\n    custom_profile: 'Perfil personalizado',\n    custom_profile_short: 'personal',\n    profile_name: 'Nombre del perfil',\n    custom_name_hint: 'Nombre del perfil personalizado',\n    save_custom: 'Guardar personalizado',\n    save_success: 'Perfil guardado',\n    save_error: 'Error al guardar',\n    name_required: 'Nombre requerido',\n    invalid_json: 'JSON inv\xe1lido',\n    species_error: 'Error especies',\n    status_error: 'Error estado',\n    custom_schedule_hint: 'JSON climate_schedule_t',\n    metadata_habitat: 'H\xe1bitat',\n    metadata_habitat_hint: 'p.ej. bosque tropical, desierto\u2026',\n    metadata_uv_category: 'Categor\xeda UV',\n    metadata_uv_category_hint: 'Zona Ferguson / clase UV',\n    metadata_uv_peak: 'Pico de \xedndice UV',\n    metadata_uv_peak_hint: 'Valor num\xe9rico (p.ej. 6.5)',\n    metadata_season: 'Ciclo estacional',\n    metadata_season_hint: 'p.ej. Estaci\xf3n seca / h\xfameda',\n    metadata_unknown: '\u2014',\n    profile_details: 'Detalles del perfil',\n    profile_common_name: 'Nombre com\xfan',\n    profile_type: 'Tipo',\n    export_profiles: 'Exportar perfiles',\n    import_profiles: 'Importar perfiles',\n    import_success: 'Importaci\xf3n correcta',\n    import_error: 'Importaci\xf3n fallida',\n    light_control: 'Control lum\xednico',\n    cct_day: 'CCT D\xeda (\u2030)',\n    cct_warm: 'CCT C\xe1lido (\u2030)',\n    uva_set: 'UVA consigna (\u2030)',\n    uva_clamp: 'UVA l\xedmite (\u2030)',\n    uvb_set: 'UVB consigna (\u2030)',\n    uvb_clamp: 'UVB l\xedmite (\u2030)',\n    uvb_period: 'Periodo UVB (s)',\n    uvb_duty: 'Duty UVB (\u2030)',\n    sky_mode: 'Modo cielo',\n    apply_light: 'Aplicar',\n    telemetry: 'Telemetr\xeda en tiempo real',\n    metric: 'M\xe9trica',\n    value: 'Valor',\n    ota_updates: 'Actualizaciones OTA',\n    controller_title: 'Controlador',\n    controller_manifest: 'Manifiesto controlador (.json firmado)',\n    controller_fw: 'Firmware controlador (.bin)',\n    flash_controller: 'Flashear controlador',\n    dome_title: 'C\xfapula',\n    dome_manifest: 'Manifiesto c\xfapula (.json firmado)',\n    dome_fw: 'Firmware c\xfapula (.bin)',\n    flash_dome: 'Flashear c\xfapula',\n    ota_status_label: 'Estado OTA',\n    manifest_required: 'Manifiesto requerido',\n    firmware_required: 'Archivo firmware requerido',\n    alarms: 'Alarmas',\n    mute_toggle: 'Alternar mute',\n    alarms_muted: 'Silenciado',\n    alarms_active: 'Activo',\n    apply_calibration: 'Guardar calibraci\xf3n',\n    calibration: 'Calibraci\xf3n UVB',\n    uvi_max: 'UVI objetivo',\n    cal_duty: 'Duty medido (\u2030)',\n    cal_measured: 'UVI medido',\n    uvi_fault: 'Sensor UVI en fallo'\n  },\n  de: {\n    language: 'Sprache',\n    species_profile: 'Artprofil',\n    apply_profile: 'Profil anwenden',\n    custom_profile: 'Benutzerprofil',\n    custom_profile_short: 'benutzer',\n    profile_name: 'Profilname',\n    custom_name_hint: 'Name des Benutzerprofils',\n    save_custom: 'Profil speichern',\n    save_success: 'Profil gespeichert',\n    save_error: 'Speichern fehlgeschlagen',\n    name_required: 'Name erforderlich',\n    invalid_json: 'Ung\xfcltiges JSON',\n    species_error: 'Artenfehler',\n    status_error: 'Statusfehler',\n    custom_schedule_hint: 'climate_schedule_t JSON',\n    metadata_habitat: 'Lebensraum',\n    metadata_habitat_hint: 'z.B. Tropenwald, W\xfcste\u2026',\n    metadata_uv_category: 'UV-Kategorie',\n    metadata_uv_category_hint: 'Ferguson-Zone / UV-Klasse',\n    metadata_uv_peak: 'UV-Index Spitze',\n    metadata_uv_peak_hint: 'Zahlenwert (z.B. 6.5)',\n    metadata_season: 'Jahreszyklus',\n    metadata_season_hint: 'z.B. Trocken- / Regenzeit',\n    metadata_unknown: '\u2014',\n    profile_details: 'Profildetails',\n    profile_common_name: 'Trivialname',\n    profile_type: 'Typ',\n    export_profiles: 'Profile exportieren',\n    import_profiles: 'Profile importieren',\n    import_success: 'Import erfolgreich',\n    import_error: 'Import fehlgeschlagen',\n    light_control: 'Lichtsteuerung',\n    cct_day: 'CCT Tag (\u2030)',\n    cct_warm: 'CCT Warm (\u2030)',\n    uva_set: 'UVA Sollwert (\u2030)',\n    uva_clamp: 'UVA Begrenzung (\u2030)',\n    uvb_set: 'UVB Sollwert (\u2030)',\n    uvb_clamp: 'UVB Begrenzung (\u2030)',\n    uvb_period: 'UVB Periode (s)',\n    uvb_duty: 'UVB Duty (\u2030)',\n    sky_mode: 'Himmelmodus',\n    apply_light: 'Anwenden',\n    telemetry: 'Live-Telemetrie',\n    metric: 'Messwert',\n    value: 'Wert',\n    ota_updates: 'OTA-Updates',\n    controller_title: 'Controller',\n    controller_manifest: 'Controller-Manifest (.json signiert)',\n    controller_fw: 'Controller-Firmware (.bin)',\n    flash_controller: 'Controller flashen',\n    dome_title: 'Dom',\n    dome_manifest: 'Dom-Manifest (.json signiert)',\n    dome_fw: 'Dom-Firmware (.bin)',\n    flash_dome: 'Dom flashen',\n    ota_status_label: 'OTA-Status',\n    manifest_required: 'Manifest erforderlich',\n    firmware_required: 'Firmware-Datei erforderlich',\n    alarms: 'Alarme',\n    mute_toggle: 'Stummschalten',\n    alarms_muted: 'Stumm',\n    alarms_active: 'Aktiv',\n    apply_calibration: 'Kalibrierung speichern',\n    calibration: 'UVB-Kalibrierung',\n    uvi_max: 'Ziel-UVI',\n    cal_duty: 'Gemessene Duty (\u2030)',\n    cal_measured: 'Gemessener UVI',\n    uvi_fault: 'UVI-Sensorfehler'\n  },\n  it: {\n    language: 'Lingua',\n    species_profile: 'Profilo specie',\n    apply_profile: 'Applica profilo',\n    custom_profile: 'Profilo personalizzato',\n    custom_profile_short: 'personal',\n    profile_name: 'Nome profilo',\n    custom_name_hint: 'Nome profilo personalizzato',\n    save_custom: 'Salva profilo',\n    save_success: 'Profilo salvato',\n    save_error: 'Salvataggio fallito',\n    name_required: 'Nome richiesto',\n    invalid_json: 'JSON non valido',\n    species_error: 'Errore specie',\n    status_error: 'Errore stato',\n    custom_schedule_hint: 'payload JSON climate_schedule_t',\n    metadata_habitat: 'Habitat',\n    metadata_habitat_hint: 'es. foresta tropicale, deserto\u2026',\n    metadata_uv_category: 'Categoria UV',\n    metadata_uv_category_hint: 'Zona Ferguson / classe UV',\n    metadata_uv_peak: 'Picco indice UV',\n    metadata_uv_peak_hint: 'Valore numerico (es. 6.5)',\n    metadata_season: 'Ciclo stagionale',\n    metadata_season_hint: 'es. stagione secca / piovosa',\n    metadata_unknown: '\u2014',\n    profile_details: 'Dettagli profilo',\n    profile_common_name: 'Nome comune',\n    profile_type: 'Tipo',\n    export_profiles: 'Esporta profili',\n    import_profiles: 'Importa profili',\n    import_success: 'Import riuscito',\n    import_error: 'Import fallito',\n    light_control: 'Controllo luci',\n    cct_day: 'CCT Giorno (\u2030)',\n    cct_warm: 'CCT Caldo (\u2030)',\n    uva_set: 'UVA setpoint (\u2030)',\n    uva_clamp: 'UVA limite (\u2030)',\n    uvb_set: 'UVB setpoint (\u2030)',\n    uvb_clamp: 'UVB limite (\u2030)',\n    uvb_period: 'Periodo UVB (s)',\n    uvb_duty: 'Duty UVB (\u2030)',\n    sky_mode: 'Modalit\xe0 cielo',\n    apply_light: 'Applica',\n    telemetry: 'Telemetria in tempo reale',\n    metric: 'Parametro',\n    value: 'Valore',\n    ota_updates: 'Aggiornamenti OTA',\n    controller_title: 'Controller',\n    controller_manifest: 'Manifest controller (.json firmato)',\n    controller_fw: 'Firmware controller (.bin)',\n    flash_controller: 'Flash controller',\n    dome_title: 'Cupola',\n    dome_manifest: 'Manifest cupola (.json firmato)',\n    dome_fw: 'Firmware cupola (.bin)',\n    flash_dome: 'Flash cupola',\n    ota_status_label: 'Stato OTA',\n    manifest_required: 'Manifest richiesto',\n    firmware_required: 'File firmware richiesto',\n    alarms: 'Allarmi',\n    mute_toggle: 'Attiva/disattiva mute',\n    alarms_muted: 'Silenzioso',\n    alarms_active: 'Attivo',\n    apply_calibration: 'Applica calibrazione',\n    calibration: 'Calibrazione UVB',\n    uvi_max: 'UVI target',\n    cal_duty: 'Duty misurato (\u2030)',\n    cal_measured: 'UVI misurato',\n    uvi_fault: 'Sensore UVI in errore'\n  }\n};\n\nconst LANGUAGE_NAMES = {\n  fr: 'Fran\xe7ais',\n  en: 'English',\n  es: 'Espa\xf1ol',\n  de: 'Deutsch',\n  it: 'Italiano'\n};\n\nconst DEFAULT_LANG = 'fr';\nlet lang = DEFAULT_LANG;\n\nconst speciesState = {\n  builtin: [],\n  custom: [],\n  builtinMap: new Map(),\n  customMap: new Map(),\n  locales: [],\n  activeKey: null\n};\n\nconst banner = document.getElementById('statusBanner');\n\nfunction translations() {\n  return I18N[lang] || I18N[DEFAULT_LANG];\n}\n\nfunction applyTranslations() {\n  const dict = translations();\n  document.querySelectorAll('[data-i18n]').forEach(el => {\n    const key = el.getAttribute('data-i18n');\n    if (dict[key]) {\n      el.textContent = dict[key];\n    }\n  });\n  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {\n    const key = el.getAttribute('data-i18n-placeholder');\n    if (dict[key]) {\n      el.setAttribute('placeholder', dict[key]);\n    }\n  });\n}\n\nfunction setLang(newLang) {\n  const normalized = (newLang || DEFAULT_LANG).toLowerCase();\n  lang = I18N[normalized] ? normalized : DEFAULT_LANG;\n  const select = document.getElementById('languageSelect');\n  if (select && select.value !== lang) {\n    select.value = lang;\n  }\n  applyTranslations();\n  renderSpeciesOptions(speciesState.activeKey);\n  updateSpeciesMetadata(speciesState.activeKey);\n}\n\nasync function fetchJSON(url, opts) {\n  const response = await fetch(url, opts);\n  if (!response.ok) {\n    const text = await response.text();\n    throw new Error(text || response.statusText);\n  }\n  if (response.status === 204) {\n    return {};\n  }\n  return response.json();\n}\n\nfunction permilleFromReg(v) {\n  return v * 40;\n}\n\nfunction regFromPermille(p) {\n  return Math.min(255, Math.max(0, Math.round(p / 40)));\n}\n\nfunction encodeManifest(text) {\n  return btoa(unescape(encodeURIComponent(text)));\n}\n\nfunction describeOta(entry) {\n  if (!entry) {\n    return '--';\n  }\n  const parts = [];\n  if (entry.version) {\n    parts.push(entry.version);\n  }\n  if (entry.message) {\n    parts.push(entry.message);\n  } else if (entry.state) {\n    parts.push(entry.state);\n  }\n  if (entry.sha256) {\n    parts.push(entry.sha256.slice(0, 8) + '\u2026');\n  }\n  return parts.join(' \u2022 ');\n}\n\nfunction updateBanner(text, isError) {\n  banner.textContent = text;\n  banner.className = isError ? 'error' : 'ok';\n}\n\nconst chartCtx = document.getElementById('telemetryChart').getContext('2d');\nconst chartState = { points: [] };\n\nfunction renderChart() {\n  const ctx = chartCtx;\n  const width = ctx.canvas.width;\n  const height = ctx.canvas.height;\n  ctx.clearRect(0, 0, width, height);\n  if (chartState.points.length === 0) {\n    return;\n  }\n  ctx.strokeStyle = '#2dd4ff';\n  ctx.lineWidth = 2;\n  ctx.beginPath();\n  chartState.points.forEach((point, index) => {\n    const x = width * (index / (chartState.points.length - 1 || 1));\n    const y = height * (1 - point.tempNorm);\n    if (index === 0) {\n      ctx.moveTo(x, y);\n    } else {\n      ctx.lineTo(x, y);\n    }\n  });\n  ctx.stroke();\n  ctx.strokeStyle = '#fbbf24';\n  ctx.beginPath();\n  chartState.points.forEach((point, index) => {\n    const x = width * (index / (chartState.points.length - 1 || 1));\n    const y = height * (1 - point.humNorm);\n    if (index === 0) {\n      ctx.moveTo(x, y);\n    } else {\n      ctx.lineTo(x, y);\n    }\n  });\n  ctx.stroke();\n}\n\nfunction updateLanguageOptions(localeList) {\n  const select = document.getElementById('languageSelect');\n  if (!select) {\n    return;\n  }\n  const dict = translations();\n  const seen = new Set();\n  select.innerHTML = '';\n  const entries = Array.isArray(localeList) && localeList.length ? localeList : Object.keys(I18N);\n  entries.forEach(code => {\n    if (!code) {\n      return;\n    }\n    const lower = code.toLowerCase();\n    if (seen.has(lower)) {\n      return;\n    }\n    seen.add(lower);\n    const option = document.createElement('option');\n    option.value = lower;\n    option.textContent = LANGUAGE_NAMES[lower] || lower.toUpperCase();\n    select.appendChild(option);\n  });\n  if (!seen.has(lang)) {\n    lang = seen.has(DEFAULT_LANG) ? DEFAULT_LANG : Array.from(seen)[0];\n  }\n  select.value = lang;\n  applyTranslations();\n}\n\nfunction determineLabel(profile) {\n  if (!profile) {\n    return '';\n  }\n  if (profile.labels) {\n    if (profile.labels[lang]) {\n      return profile.labels[lang];\n    }\n    if (profile.labels[DEFAULT_LANG]) {\n      return profile.labels[DEFAULT_LANG];\n    }\n    if (profile.labels.en) {\n      return profile.labels.en;\n    }\n    const keys = Object.keys(profile.labels);\n    if (keys.length) {\n      return profile.labels[keys[0]];\n    }\n  }\n  return profile.name || profile.key;\n}\n\nfunction renderSpeciesOptions(activeKey) {\n  const select = document.getElementById('speciesSelect');\n  if (!select) {\n    return;\n  }\n  const dict = translations();\n  select.innerHTML = '';\n  const customSuffix = dict.custom_profile_short || 'custom';\n  speciesState.builtin.forEach(profile => {\n    const option = document.createElement('option');\n    option.value = profile.key;\n    option.textContent = determineLabel(profile);\n    select.appendChild(option);\n  });\n  speciesState.custom.forEach(profile => {\n    const option = document.createElement('option');\n    option.value = profile.key;\n    option.textContent = `${profile.name} (${customSuffix})`;\n    select.appendChild(option);\n  });\n  let selected = activeKey;\n  if (!selected || (!speciesState.builtinMap.has(selected) && !speciesState.customMap.has(selected))) {\n    selected = select.options.length ? select.options[0].value : '';\n  }\n  if (selected) {\n    select.value = selected;\n  }\n  speciesState.activeKey = selected;\n}\n\nfunction updateSpeciesMetadata(key) {\n  const container = document.getElementById('speciesMetadata');\n  if (!container) {\n    return;\n  }\n  const dict = translations();\n  const profile = speciesState.builtinMap.get(key) || speciesState.customMap.get(key);\n  if (!profile) {\n    container.style.display = 'none';\n    return;\n  }\n  container.style.display = '';\n  const isCustom = speciesState.customMap.has(key);\n  const metadata = profile.metadata || {};\n  const unknown = dict.metadata_unknown || '\u2014';\n  document.getElementById('metaName').textContent = isCustom ? profile.name : determineLabel(profile);\n  document.getElementById('metaType').textContent = isCustom ? (dict.custom_profile || 'Custom profile') : (dict.species_profile || 'Species profile');\n  document.getElementById('metaHabitat').textContent = metadata.habitat || unknown;\n  document.getElementById('metaUVCategory').textContent = metadata.uv_index_category || unknown;\n  const peak = typeof metadata.uv_index_peak === 'number' ? metadata.uv_index_peak : (typeof profile.uv_index_peak === 'number' ? profile.uv_index_peak : null);\n  document.getElementById('metaUVPeak').textContent = peak != null ? peak.toFixed(1) : unknown;\n  document.getElementById('metaSeason').textContent = metadata.season_cycle || unknown;\n}\n\nfunction metadataFromForm() {\n  const meta = {};\n  const habitat = document.getElementById('customHabitat').value.trim();\n  const category = document.getElementById('customUVCategory').value.trim();\n  const season = document.getElementById('customSeason').value.trim();\n  const peakText = document.getElementById('customUVPeak').value.trim();\n  if (habitat) {\n    meta.habitat = habitat;\n  }\n  if (category) {\n    meta.uv_index_category = category;\n  }\n  if (season) {\n    meta.season_cycle = season;\n  }\n  if (peakText) {\n    const peak = parseFloat(peakText);\n    if (!Number.isNaN(peak)) {\n      meta.uv_index_peak = peak;\n    }\n  }\n  return meta;\n}\n\n\nasync function fetchAllSpecies() {\n  const perPage = 16;\n  const locales = new Set();\n  const builtin = [];\n  const custom = [];\n  let builtinTotal = 0;\n  let customTotal = 0;\n\n  async function fetchPage(bPage, cPage) {\n    const params = new URLSearchParams({\n      builtin_page: String(bPage),\n      custom_page: String(cPage),\n      builtin_per_page: String(perPage),\n      custom_per_page: String(perPage)\n    });\n    return fetchJSON('/api/species?' + params.toString());\n  }\n\n  const first = await fetchPage(0, 0);\n  if (Array.isArray(first.locales)) {\n    first.locales.forEach(code => locales.add(code.toLowerCase()));\n  }\n  if (first.builtin && Array.isArray(first.builtin.items)) {\n    builtin.push(...first.builtin.items);\n    builtinTotal = first.builtin.total || builtin.length;\n  }\n  if (first.custom && Array.isArray(first.custom.items)) {\n    custom.push(...first.custom.items);\n    customTotal = first.custom.total || custom.length;\n  }\n\n  let page = 1;\n  while (builtin.length < builtinTotal && page < 32) {\n    const resp = await fetchPage(page, 0);\n    if (resp.builtin && Array.isArray(resp.builtin.items)) {\n      builtin.push(...resp.builtin.items);\n    }\n    if (Array.isArray(resp.locales)) {\n      resp.locales.forEach(code => locales.add(code.toLowerCase()));\n    }\n    page += 1;\n  }\n\n  page = 1;\n  while (custom.length < customTotal && page < 64) {\n    const resp = await fetchPage(0, page);\n    if (resp.custom && Array.isArray(resp.custom.items)) {\n      custom.push(...resp.custom.items);\n    }\n    if (Array.isArray(resp.locales)) {\n      resp.locales.forEach(code => locales.add(code.toLowerCase()));\n    }\n    page += 1;\n  }\n\n  if (!locales.size) {\n    locales.add(DEFAULT_LANG);\n    locales.add('en');\n  }\n\n  return {\n    builtin,\n    custom,\n    locales: Array.from(locales),\n    active_key: first.active_key || (builtin.length ? builtin[0].key : '')\n  };\n}\n\nasync function refreshSpecies() {\n  const dict = translations();\n  try {\n    const data = await fetchAllSpecies();\n    speciesState.builtin = data.builtin;\n    speciesState.custom = data.custom;\n    speciesState.builtinMap = new Map(data.builtin.map(profile => [profile.key, profile]));\n    speciesState.customMap = new Map(data.custom.map(profile => [profile.key, profile]));\n    speciesState.locales = data.locales;\n    speciesState.activeKey = data.active_key;\n    updateLanguageOptions(data.locales);\n    renderSpeciesOptions(speciesState.activeKey);\n    updateSpeciesMetadata(speciesState.activeKey);\n  } catch (err) {\n    alert((dict.species_error || 'Species error') + ': ' + err.message);\n  }\n}\n\nasync function refreshStatus() {\n  const dict = translations();\n  try {\n    const status = await fetchJSON('/api/status');\n    updateBanner(status.summary, false);\n    document.getElementById('cctDay').value = status.light.cct.day;\n    document.getElementById('cctWarm').value = status.light.cct.warm;\n    document.getElementById('uvaSet').value = status.light.uva.set;\n    document.getElementById('uvaClamp').value = status.light.uva.clamp;\n    document.getElementById('uvbSet').value = status.light.uvb.set;\n    document.getElementById('uvbClamp').value = status.light.uvb.clamp;\n    document.getElementById('uvbPeriod').value = status.light.uvb.period_s;\n    document.getElementById('uvbDuty').value = status.light.uvb.duty_pm;\n    document.getElementById('skyMode').value = status.light.sky;\n    document.getElementById('alarmState').textContent = status.alarms.muted ? (dict.alarms_muted || 'Muted') : (dict.alarms_active || 'Active');\n    document.getElementById('calUviMax').value = status.calibration.uvi_max.toFixed(2);\n    document.getElementById('calDuty').value = status.calibration.last_duty_pm.toFixed(0);\n    document.getElementById('calMeasured').value = status.calibration.last_uvi.toFixed(2);\n\n    const table = document.getElementById('telemetryTable');\n    table.innerHTML = '';\n    const uviValid = status.climate && status.climate.uvi_valid;\n    const uviFault = status.dome && status.dome.uvi_fault;\n    let uviText = '--';\n    if (uviValid) {\n      uviText = `${status.climate.uvi_measured.toFixed(2)} (\u0394 ${status.climate.uvi_error.toFixed(2)}, ${status.climate.irradiance_uW_cm2.toFixed(1)} \xb5W/cm\xb2)`;\n    } else if (uviFault) {\n      uviText = dict.uvi_fault || 'sensor fault';\n    } else if (status.env.uvi !== undefined) {\n      uviText = status.env.uvi.toFixed(2);\n    }\n    const irrText = status.env.irradiance_uW_cm2 !== undefined ? status.env.irradiance_uW_cm2.toFixed(1) : '--';\n    const rows = [\n      ['Temp \xb0C', status.env.temperature.toFixed(1)],\n      ['Hum %', status.env.humidity.toFixed(1)],\n      ['Press hPa', status.env.pressure.toFixed(1)],\n      ['UVI', uviText],\n      ['Irr \xb5W/cm\xb2', irrText],\n      ['Fan %', permilleFromReg(status.light.fan_pwm).toFixed(0)]\n    ];\n    rows.forEach(([label, value]) => {\n      const tr = document.createElement('tr');\n      const td1 = document.createElement('td');\n      td1.textContent = label;\n      const td2 = document.createElement('td');\n      td2.textContent = value;\n      tr.appendChild(td1);\n      tr.appendChild(td2);\n      table.appendChild(tr);\n    });\n\n    const ota = status.ota || {};\n    const controllerStatus = document.getElementById('controllerStatusText');\n    if (controllerStatus) {\n      controllerStatus.textContent = describeOta(ota.controller);\n    }\n    const domeStatus = document.getElementById('domeStatusText');\n    if (domeStatus) {\n      domeStatus.textContent = describeOta(ota.dome);\n    }\n\n    chartState.points.push({\n      tempNorm: Math.min(1, Math.max(0, (status.env.temperature - 10) / 30)),\n      humNorm: Math.min(1, Math.max(0, status.env.humidity / 100))\n    });\n    if (chartState.points.length > 120) {\n      chartState.points.shift();\n    }\n    renderChart();\n  } catch (err) {\n    updateBanner((dict.status_error || 'Status error') + ': ' + err.message, true);\n  }\n}\n\nasync function applySpeciesProfile() {\n  const dict = translations();\n  const key = document.getElementById('speciesSelect').value;\n  await fetchJSON('/api/species/apply', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({ key })\n  });\n  speciesState.activeKey = key;\n  updateSpeciesMetadata(key);\n}\n\nfunction parseCustomSchedule() {\n  const text = document.getElementById('customSchedule').value;\n  if (!text.trim()) {\n    throw new Error('Empty schedule');\n  }\n  return JSON.parse(text);\n}\n\nasync function saveCustomProfile() {\n  const dict = translations();\n  const name = document.getElementById('customName').value.trim();\n  if (!name) {\n    alert(dict.name_required || 'Name required');\n    return;\n  }\n  let schedule;\n  try {\n    schedule = parseCustomSchedule();\n  } catch (err) {\n    alert((dict.invalid_json || 'Invalid JSON') + ': ' + err.message);\n    return;\n  }\n  const metadata = metadataFromForm();\n  const payload = { name, schedule };\n  if (Object.keys(metadata).length) {\n    payload.metadata = metadata;\n  }\n  try {\n    await fetchJSON('/api/species/custom', {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify(payload)\n    });\n    await refreshSpecies();\n  } catch (err) {\n    alert((dict.save_error || 'Save failed') + ': ' + err.message);\n  }\n}\n\nasync function toggleMute() {\n  await fetchJSON('/api/alarms/mute', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({ toggle: true })\n  });\n  await refreshStatus();\n}\n\nasync function exportSpecies() {\n  const data = await fetchJSON('/api/species/export');\n  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });\n  const url = URL.createObjectURL(blob);\n  const link = document.createElement('a');\n  link.href = url;\n  link.download = 'species_profiles.json';\n  document.body.appendChild(link);\n  link.click();\n  document.body.removeChild(link);\n  URL.revokeObjectURL(url);\n}\n\nasync function importSpecies(dataFile) {\n  const dict = translations();\n  const text = await dataFile.text();\n  const payload = JSON.parse(text);\n  await fetchJSON('/api/species/import', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(payload)\n  });\n  alert(dict.import_success || 'Import succeeded');\n  await refreshSpecies();\n}\n\nasync function uploadFirmware(manifestId, binId, url, progressId) {\n  const dict = translations();\n  const manifestFile = document.getElementById(manifestId).files[0];\n  if (!manifestFile) {\n    alert(dict.manifest_required || 'Manifest required');\n    return;\n  }\n  const firmware = document.getElementById(binId).files[0];\n  if (!firmware) {\n    alert(dict.firmware_required || 'Firmware required');\n    return;\n  }\n  const manifestText = await manifestFile.text();\n  const progress = document.getElementById(progressId);\n  if (progress) {\n    progress.value = 0;\n  }\n  const response = await fetch(url, {\n    method: 'POST',\n    headers: {\n      'X-OTA-Manifest': encodeManifest(manifestText),\n      'Content-Type': 'application/octet-stream'\n    },\n    body: firmware\n  });\n  if (!response.ok) {\n    throw new Error(await response.text());\n  }\n  if (progress) {\n    progress.value = 100;\n  }\n  try {\n    await response.json();\n  } catch (err) {\n    /* ignore */\n  }\n  await refreshStatus();\n}\n\n// Event wiring\nconst languageSelect = document.getElementById('languageSelect');\nif (languageSelect) {\n  languageSelect.addEventListener('change', event => {\n    setLang(event.target.value);\n  });\n}\n\ndocument.getElementById('speciesSelect').addEventListener('change', event => {\n  speciesState.activeKey = event.target.value;\n  updateSpeciesMetadata(speciesState.activeKey);\n});\n\ndocument.getElementById('applyLight').addEventListener('click', async () => {\n  const payload = {\n    cct: {\n      day: +document.getElementById('cctDay').value,\n      warm: +document.getElementById('cctWarm').value\n    },\n    uva: {\n      set: +document.getElementById('uvaSet').value,\n      clamp: +document.getElementById('uvaClamp').value\n    },\n    uvb: {\n      set: +document.getElementById('uvbSet').value,\n      clamp: +document.getElementById('uvbClamp').value,\n      period_s: +document.getElementById('uvbPeriod').value,\n      duty_pm: +document.getElementById('uvbDuty').value\n    },\n    sky: +document.getElementById('skyMode').value\n  };\n  await fetchJSON('/api/light/dome0', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(payload)\n  });\n  await refreshStatus();\n});\n\ndocument.getElementById('applySpecies').addEventListener('click', () => {\n  applySpeciesProfile().catch(err => alert(err.message));\n});\n\ndocument.getElementById('saveCustom').addEventListener('click', () => {\n  saveCustomProfile();\n});\n\ndocument.getElementById('toggleMute').addEventListener('click', () => {\n  toggleMute().catch(err => alert(err.message));\n});\n\ndocument.getElementById('applyCalibration').addEventListener('click', async () => {\n  await fetchJSON('/api/calibrate/uvb', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      duty_pm: +document.getElementById('calDuty').value,\n      uvi: +document.getElementById('calMeasured').value,\n      uvi_max: +document.getElementById('calUviMax').value\n    })\n  });\n  await refreshStatus();\n});\n\ndocument.getElementById('exportSpecies').addEventListener('click', () => {\n  exportSpecies().catch(err => alert(err.message));\n});\n\nconst importInput = document.getElementById('importSpeciesFile');\ndocument.getElementById('importSpeciesBtn').addEventListener('click', () => {\n  importInput.click();\n});\n\nimportInput.addEventListener('change', event => {\n  const file = event.target.files[0];\n  if (!file) {\n    return;\n  }\n  importSpecies(file).catch(err => alert((translations().import_error || 'Import failed') + ': ' + err.message)).finally(() => {\n    event.target.value = '';\n  });\n});\n\ndocument.getElementById('flashController').addEventListener('click', () => {\n  uploadFirmware('controllerManifest', 'controllerBin', '/api/ota/controller', 'controllerProgress').catch(err => alert(err.message));\n});\n\ndocument.getElementById('flashDome').addEventListener('click', () => {\n  uploadFirmware('domeManifest', 'domeBin', '/api/ota/dome', 'domeProgress').catch(err => alert(err.message));\n});\n\nsetLang(DEFAULT_LANG);\nrefreshSpecies();\nrefreshStatus();\nsetInterval(refreshStatus, 5000);</script></body></html>";
 
 static float permille_from_reg(uint8_t reg_value)
 {
@@ -699,44 +709,224 @@ static cJSON *schedule_to_json(const climate_schedule_t *schedule)
     return root;
 }
 
+static void add_metadata_json(cJSON *parent, const species_profile_metadata_t *meta)
+{
+    if (!parent) {
+        return;
+    }
+    cJSON *meta_obj = cJSON_AddObjectToObject(parent, "metadata");
+    if (!meta_obj || !meta) {
+        return;
+    }
+    if (meta->habitat) {
+        cJSON_AddStringToObject(meta_obj, "habitat", meta->habitat);
+    }
+    if (meta->uv_index_category) {
+        cJSON_AddStringToObject(meta_obj, "uv_index_category", meta->uv_index_category);
+    }
+    if (meta->season_cycle) {
+        cJSON_AddStringToObject(meta_obj, "season_cycle", meta->season_cycle);
+    }
+    cJSON_AddNumberToObject(meta_obj, "uv_index_peak", meta->uv_index_peak);
+}
+
+static void add_custom_metadata_json(cJSON *parent, const species_custom_profile_t *profile)
+{
+    if (!parent || !profile) {
+        return;
+    }
+    cJSON *meta_obj = cJSON_AddObjectToObject(parent, "metadata");
+    if (!meta_obj) {
+        return;
+    }
+    if (profile->habitat[0] != '\0') {
+        cJSON_AddStringToObject(meta_obj, "habitat", profile->habitat);
+    }
+    if (profile->uv_index_category[0] != '\0') {
+        cJSON_AddStringToObject(meta_obj, "uv_index_category", profile->uv_index_category);
+    }
+    if (profile->season_cycle[0] != '\0') {
+        cJSON_AddStringToObject(meta_obj, "season_cycle", profile->season_cycle);
+    }
+    cJSON_AddNumberToObject(meta_obj, "uv_index_peak", profile->uv_index_peak);
+}
+
 static esp_err_t api_species_get(httpd_req_t *req)
 {
     REQUIRE_AUTH_OR_RETURN(req);
+    ESP_RETURN_ON_ERROR(species_profiles_init(), TAG, "species init");
+
+    const size_t total_builtin = species_profiles_builtin_count();
+    const size_t total_custom = species_profiles_custom_count();
+    const size_t max_locales = 24;
+    char locale_codes[24][6] = {{0}};
+    size_t locale_count = 0;
+    for (size_t i = 0; i < total_builtin; ++i) {
+        const species_profile_t *profile = species_profiles_builtin(i);
+        if (!profile || !profile->labels) {
+            continue;
+        }
+        for (size_t l = 0; l < profile->label_count; ++l) {
+            const char *code = profile->labels[l].code;
+            if (!code || code[0] == '\0') {
+                continue;
+            }
+            bool exists = false;
+            for (size_t idx = 0; idx < locale_count; ++idx) {
+                if (strcasecmp(locale_codes[idx], code) == 0) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists && locale_count < max_locales) {
+                strlcpy(locale_codes[locale_count++], code, sizeof(locale_codes[0]));
+            }
+        }
+    }
+    const char *default_locales[] = { "fr", "en" };
+    for (size_t d = 0; d < sizeof(default_locales) / sizeof(default_locales[0]); ++d) {
+        bool exists = false;
+        for (size_t idx = 0; idx < locale_count; ++idx) {
+            if (strcasecmp(locale_codes[idx], default_locales[d]) == 0) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists && locale_count < max_locales) {
+            strlcpy(locale_codes[locale_count++], default_locales[d], sizeof(locale_codes[0]));
+        }
+    }
+    size_t builtin_page = 0;
+    size_t builtin_per_page = total_builtin;
+    size_t custom_page = 0;
+    size_t custom_per_page = total_custom;
+    const size_t max_page_size = 16;
+
+    int query_len = httpd_req_get_url_query_len(req);
+    char *query = NULL;
+    if (query_len > 0) {
+        query = malloc(query_len + 1);
+        if (!query) {
+            return ESP_ERR_NO_MEM;
+        }
+        if (httpd_req_get_url_query_str(req, query, query_len + 1) == ESP_OK) {
+            char buf[16];
+            if (httpd_query_key_value(query, "builtin_page", buf, sizeof(buf)) == ESP_OK) {
+                builtin_page = strtoul(buf, NULL, 10);
+            }
+            if (httpd_query_key_value(query, "builtin_per_page", buf, sizeof(buf)) == ESP_OK) {
+                builtin_per_page = strtoul(buf, NULL, 10);
+            }
+            if (httpd_query_key_value(query, "custom_page", buf, sizeof(buf)) == ESP_OK) {
+                custom_page = strtoul(buf, NULL, 10);
+            }
+            if (httpd_query_key_value(query, "custom_per_page", buf, sizeof(buf)) == ESP_OK) {
+                custom_per_page = strtoul(buf, NULL, 10);
+            }
+        }
+        free(query);
+    }
+
+    if (builtin_per_page == 0 || builtin_per_page > max_page_size) {
+        builtin_per_page = max_page_size;
+    }
+    if (custom_per_page == 0 || custom_per_page > max_page_size) {
+        custom_per_page = max_page_size;
+    }
+
+    size_t builtin_offset = builtin_page * builtin_per_page;
+    if (builtin_offset > total_builtin) {
+        builtin_offset = total_builtin;
+    }
+    size_t builtin_end = builtin_offset + builtin_per_page;
+    if (builtin_end > total_builtin) {
+        builtin_end = total_builtin;
+    }
+
+    size_t custom_offset = custom_page * custom_per_page;
+    if (custom_offset > total_custom) {
+        custom_offset = total_custom;
+    }
+    size_t custom_end = custom_offset + custom_per_page;
+    if (custom_end > total_custom) {
+        custom_end = total_custom;
+    }
+
     cJSON *root = cJSON_CreateObject();
     if (!root) {
         return ESP_ERR_NO_MEM;
     }
-    char active[32] = {0};
+
+    char active[48] = {0};
     if (species_profiles_get_active_key(active, sizeof(active)) == ESP_OK) {
         cJSON_AddStringToObject(root, "active_key", active);
     }
-    cJSON *builtin = cJSON_AddArrayToObject(root, "builtin");
-    for (size_t i = 0; i < species_profiles_builtin_count(); ++i) {
+
+    cJSON *locale_arr = cJSON_AddArrayToObject(root, "locales");
+    if (locale_arr) {
+        for (size_t i = 0; i < locale_count; ++i) {
+            cJSON_AddItemToArray(locale_arr, cJSON_CreateString(locale_codes[i]));
+        }
+    }
+
+    cJSON *builtin_obj = cJSON_AddObjectToObject(root, "builtin");
+    cJSON *builtin_items = cJSON_AddArrayToObject(builtin_obj, "items");
+    cJSON_AddNumberToObject(builtin_obj, "total", (double)total_builtin);
+    cJSON_AddNumberToObject(builtin_obj, "page", (double)builtin_page);
+    cJSON_AddNumberToObject(builtin_obj, "per_page", (double)builtin_per_page);
+
+    for (size_t i = builtin_offset; i < builtin_end; ++i) {
         const species_profile_t *profile = species_profiles_builtin(i);
+        if (!profile) {
+            continue;
+        }
         cJSON *entry = cJSON_CreateObject();
+        if (!entry) {
+            cJSON_Delete(root);
+            return ESP_ERR_NO_MEM;
+        }
         cJSON_AddStringToObject(entry, "key", profile->key);
         cJSON *labels = cJSON_AddObjectToObject(entry, "labels");
-        cJSON_AddStringToObject(labels, "fr", profile->label_fr);
-        cJSON_AddStringToObject(labels, "en", profile->label_en);
-        cJSON_AddStringToObject(labels, "es", profile->label_es);
-        cJSON_AddStringToObject(entry, "habitat", profile->habitat);
-        cJSON *sched = schedule_to_json(&profile->schedule);
-        cJSON_AddItemToObject(entry, "schedule", sched);
-        cJSON_AddItemToArray(builtin, entry);
-    }
-    cJSON *custom = cJSON_AddArrayToObject(root, "custom");
-    for (size_t i = 0;; ++i) {
-        species_custom_profile_t entry;
-        if (species_profiles_custom_get(i, &entry) != ESP_OK) {
-            break;
+        if (labels) {
+            for (size_t l = 0; l < profile->label_count; ++l) {
+                cJSON_AddStringToObject(labels, profile->labels[l].code, profile->labels[l].label);
+            }
         }
-        cJSON *obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(obj, "key", entry.key);
-        cJSON_AddStringToObject(obj, "name", entry.name);
-        cJSON *sched = schedule_to_json(&entry.schedule);
-        cJSON_AddItemToObject(obj, "schedule", sched);
-        cJSON_AddItemToArray(custom, obj);
+        add_metadata_json(entry, &profile->metadata);
+        cJSON *sched = schedule_to_json(&profile->schedule);
+        if (sched) {
+            cJSON_AddItemToObject(entry, "schedule", sched);
+        }
+        cJSON_AddItemToArray(builtin_items, entry);
     }
+
+    cJSON *custom_obj = cJSON_AddObjectToObject(root, "custom");
+    cJSON *custom_items = cJSON_AddArrayToObject(custom_obj, "items");
+    cJSON_AddNumberToObject(custom_obj, "total", (double)total_custom);
+    cJSON_AddNumberToObject(custom_obj, "page", (double)custom_page);
+    cJSON_AddNumberToObject(custom_obj, "per_page", (double)custom_per_page);
+
+    for (size_t i = custom_offset; i < custom_end; ++i) {
+        species_custom_profile_t profile = {0};
+        if (species_profiles_custom_get(i, &profile) != ESP_OK) {
+            continue;
+        }
+        cJSON *entry = cJSON_CreateObject();
+        if (!entry) {
+            cJSON_Delete(root);
+            return ESP_ERR_NO_MEM;
+        }
+        cJSON_AddStringToObject(entry, "key", profile.key);
+        cJSON_AddStringToObject(entry, "name", profile.name);
+        add_custom_metadata_json(entry, &profile);
+        cJSON_AddNumberToObject(entry, "uv_index_peak", profile.uv_index_peak);
+        cJSON *sched = schedule_to_json(&profile.schedule);
+        if (sched) {
+            cJSON_AddItemToObject(entry, "schedule", sched);
+        }
+        cJSON_AddItemToArray(custom_items, entry);
+    }
+
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!json) {
@@ -811,7 +1001,40 @@ static esp_err_t api_species_custom(httpd_req_t *req)
     schedule.night_uvi_max = cJSON_GetObjectItem(night, "uvi_max")->valuedouble;
 
     char key[32];
-    esp_err_t err = species_profiles_save_custom(name, &schedule, key, sizeof(key));
+    species_profile_metadata_t meta = {0};
+    char habitat[128] = {0};
+    char category[32] = {0};
+    char season[48] = {0};
+    bool meta_present = false;
+    cJSON *metadata_obj = cJSON_GetObjectItem(root, "metadata");
+    if (cJSON_IsObject(metadata_obj)) {
+        cJSON *hab = cJSON_GetObjectItem(metadata_obj, "habitat");
+        if (cJSON_IsString(hab) && hab->valuestring) {
+            strlcpy(habitat, hab->valuestring, sizeof(habitat));
+            meta_present = true;
+        }
+        cJSON *cat = cJSON_GetObjectItem(metadata_obj, "uv_index_category");
+        if (cJSON_IsString(cat) && cat->valuestring) {
+            strlcpy(category, cat->valuestring, sizeof(category));
+            meta_present = true;
+        }
+        cJSON *season_obj = cJSON_GetObjectItem(metadata_obj, "season_cycle");
+        if (cJSON_IsString(season_obj) && season_obj->valuestring) {
+            strlcpy(season, season_obj->valuestring, sizeof(season));
+            meta_present = true;
+        }
+        cJSON *uvp = cJSON_GetObjectItem(metadata_obj, "uv_index_peak");
+        if (cJSON_IsNumber(uvp)) {
+            meta.uv_index_peak = uvp->valuedouble;
+            meta_present = true;
+        }
+    }
+    meta.habitat = habitat[0] ? habitat : NULL;
+    meta.uv_index_category = category[0] ? category : NULL;
+    meta.season_cycle = season[0] ? season : NULL;
+    const species_profile_metadata_t *meta_ptr = meta_present ? &meta : NULL;
+
+    esp_err_t err = species_profiles_save_custom(name, &schedule, meta_ptr, key, sizeof(key));
     cJSON_Delete(root);
     if (err != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
@@ -894,6 +1117,172 @@ static esp_err_t api_security_rotate(httpd_req_t *req)
     esp_err_t send_err = httpd_resp_sendstr(req, json);
     free(json);
     return send_err;
+}
+
+static esp_err_t api_species_export(httpd_req_t *req)
+{
+    REQUIRE_AUTH_OR_RETURN(req);
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    uint8_t nonce[16];
+    uint8_t signature[32];
+    esp_err_t err = species_profiles_export_secure(&blob, &blob_len, nonce, signature);
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "export failed");
+    }
+
+    size_t payload_len = 0;
+    if (mbedtls_base64_encode(NULL, 0, &payload_len, blob, blob_len) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+        payload_len = ((blob_len + 2) / 3) * 4;
+    }
+    char *payload_b64 = (char *)malloc(payload_len + 1);
+    if (!payload_b64) {
+        free(blob);
+        return ESP_ERR_NO_MEM;
+    }
+    if (mbedtls_base64_encode((unsigned char *)payload_b64, payload_len, &payload_len, blob, blob_len) != 0) {
+        free(payload_b64);
+        free(blob);
+        return ESP_ERR_INVALID_STATE;
+    }
+    payload_b64[payload_len] = '\0';
+
+    size_t nonce_len = 0;
+    if (mbedtls_base64_encode(NULL, 0, &nonce_len, nonce, sizeof(nonce)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+        nonce_len = ((sizeof(nonce) + 2) / 3) * 4;
+    }
+    char *nonce_b64 = (char *)malloc(nonce_len + 1);
+    if (!nonce_b64) {
+        free(payload_b64);
+        free(blob);
+        return ESP_ERR_NO_MEM;
+    }
+    if (mbedtls_base64_encode((unsigned char *)nonce_b64, nonce_len, &nonce_len, nonce, sizeof(nonce)) != 0) {
+        free(nonce_b64);
+        free(payload_b64);
+        free(blob);
+        return ESP_ERR_INVALID_STATE;
+    }
+    nonce_b64[nonce_len] = '\0';
+
+    size_t sig_len = 0;
+    if (mbedtls_base64_encode(NULL, 0, &sig_len, signature, sizeof(signature)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+        sig_len = ((sizeof(signature) + 2) / 3) * 4;
+    }
+    char *signature_b64 = (char *)malloc(sig_len + 1);
+    if (!signature_b64) {
+        free(nonce_b64);
+        free(payload_b64);
+        free(blob);
+        return ESP_ERR_NO_MEM;
+    }
+    if (mbedtls_base64_encode((unsigned char *)signature_b64, sig_len, &sig_len, signature, sizeof(signature)) != 0) {
+        free(signature_b64);
+        free(nonce_b64);
+        free(payload_b64);
+        free(blob);
+        return ESP_ERR_INVALID_STATE;
+    }
+    signature_b64[sig_len] = '\0';
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        free(signature_b64);
+        free(nonce_b64);
+        free(payload_b64);
+        free(blob);
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddNumberToObject(root, "version", CUSTOM_BLOB_VERSION);
+    cJSON_AddStringToObject(root, "algorithm", "HMAC-SHA256");
+    cJSON_AddStringToObject(root, "payload", payload_b64);
+    cJSON_AddStringToObject(root, "nonce", nonce_b64);
+    cJSON_AddStringToObject(root, "signature", signature_b64);
+
+    free(signature_b64);
+    free(nonce_b64);
+    free(payload_b64);
+    free(blob);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) {
+        return ESP_ERR_NO_MEM;
+    }
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t resp = httpd_resp_sendstr(req, json);
+    free(json);
+    return resp;
+}
+
+static esp_err_t api_species_import(httpd_req_t *req)
+{
+    REQUIRE_AUTH_OR_RETURN(req);
+    if (req->content_len <= 0 || req->content_len > 4096) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid size");
+    }
+    char *body = (char *)malloc(req->content_len + 1);
+    if (!body) {
+        return ESP_ERR_NO_MEM;
+    }
+    int received = httpd_req_recv(req, body, req->content_len);
+    if (received <= 0) {
+        free(body);
+        return ESP_FAIL;
+    }
+    body[received] = '\0';
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json");
+    }
+    const char *payload_b64 = cJSON_GetStringValue(cJSON_GetObjectItem(root, "payload"));
+    const char *nonce_b64 = cJSON_GetStringValue(cJSON_GetObjectItem(root, "nonce"));
+    const char *signature_b64 = cJSON_GetStringValue(cJSON_GetObjectItem(root, "signature"));
+    if (!payload_b64 || !nonce_b64 || !signature_b64) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing fields");
+    }
+
+    size_t payload_len = strlen(payload_b64);
+    size_t decoded_payload_len = (payload_len / 4) * 3 + 1;
+    uint8_t *payload = (uint8_t *)malloc(decoded_payload_len);
+    if (!payload) {
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
+    if (mbedtls_base64_decode(payload, decoded_payload_len, &decoded_payload_len, (const unsigned char *)payload_b64, payload_len) != 0) {
+        free(payload);
+        cJSON_Delete(root);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "payload decode failed");
+    }
+
+    size_t nonce_len = strlen(nonce_b64);
+    uint8_t decoded_nonce[16];
+    size_t decoded_nonce_len = sizeof(decoded_nonce);
+    if (mbedtls_base64_decode(decoded_nonce, sizeof(decoded_nonce), &decoded_nonce_len, (const unsigned char *)nonce_b64, nonce_len) != 0 || decoded_nonce_len != sizeof(decoded_nonce)) {
+        free(payload);
+        cJSON_Delete(root);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "nonce decode failed");
+    }
+
+    size_t sig_len = strlen(signature_b64);
+    uint8_t decoded_signature[32];
+    size_t decoded_signature_len = sizeof(decoded_signature);
+    if (mbedtls_base64_decode(decoded_signature, sizeof(decoded_signature), &decoded_signature_len, (const unsigned char *)signature_b64, sig_len) != 0 || decoded_signature_len != sizeof(decoded_signature)) {
+        free(payload);
+        cJSON_Delete(root);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "signature decode failed");
+    }
+
+    esp_err_t err = species_profiles_import_secure(payload, decoded_payload_len, decoded_nonce, decoded_signature);
+    free(payload);
+    cJSON_Delete(root);
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "import failed");
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
 static esp_err_t handle_ota_controller(httpd_req_t *req)
