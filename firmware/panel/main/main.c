@@ -2,6 +2,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "sdkconfig.h"
 
 #include "app_config.h"
 #include "display_driver.h"
@@ -12,10 +13,18 @@ static const char *TAG = "main";
 
 static void init_nvs(void)
 {
+#if CONFIG_NVS_ENCRYPTION
+    esp_err_t err = nvs_flash_secure_init();
+#else
     esp_err_t err = nvs_flash_init();
+#endif
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
+#if CONFIG_NVS_ENCRYPTION
+        ESP_ERROR_CHECK(nvs_flash_secure_init());
+#else
         ESP_ERROR_CHECK(nvs_flash_init());
+#endif
     } else {
         ESP_ERROR_CHECK(err);
     }

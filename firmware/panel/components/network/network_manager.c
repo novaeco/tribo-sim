@@ -19,6 +19,8 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 
+#include "controller_cert_store.h"
+
 #define TAG "net"
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -30,6 +32,10 @@
 #define NETWORK_RECONNECT_MAX_MS   15000
 #define NETWORK_UPLOAD_CHUNK       2048
 #define NETWORK_MAX_PATH           256
+#define NETWORK_CERT_BACKOFF_MIN_MS 2000
+#define NETWORK_CERT_BACKOFF_MAX_MS 60000
+#define NETWORK_CERT_PROVISION_PATH "/api/security/root_ca"
+#define NETWORK_CERT_PROVISION_TIMEOUT_MS 8000
 
 typedef enum {
     NETWORK_STATE_STOPPED = 0,
@@ -48,6 +54,7 @@ typedef enum {
     NETWORK_CMD_SPECIES_APPLY,
     NETWORK_CMD_OTA_CONTROLLER,
     NETWORK_CMD_OTA_DOME,
+    NETWORK_CMD_CERT_PROVISION,
 } network_command_type_t;
 
 typedef struct {
@@ -62,6 +69,9 @@ typedef struct {
         struct {
             char path[NETWORK_MAX_PATH];
         } ota;
+        struct {
+            QueueHandle_t response;
+        } provision;
     } payload;
 } network_command_t;
 
@@ -86,6 +96,9 @@ typedef struct {
     void *error_ctx;
     network_species_cb_t species_cb;
     void *species_ctx;
+    bool cert_auto_pending;
+    uint32_t cert_backoff_ms;
+    uint64_t cert_next_attempt_us;
 } network_context_t;
 
 static network_context_t s_ctx = {0};
@@ -105,6 +118,8 @@ static esp_err_t network_set_alarm_mute_internal(bool mute);
 static esp_err_t network_fetch_species_internal(void);
 static esp_err_t network_apply_species_internal(const char *key);
 static esp_err_t network_upload_ota_internal(const char *endpoint, const char *path);
+static esp_err_t network_import_root_ca_from_buffer_internal(const uint8_t *data, size_t len);
+static esp_err_t network_provision_root_ca_internal(void);
 static esp_err_t http_perform(const char *path,
                               esp_http_client_method_t method,
                               const char *payload,
@@ -113,12 +128,38 @@ static esp_err_t http_perform(const char *path,
                               int *out_len);
 static void parse_status_json(const char *json, terrarium_status_t *out_status);
 static esp_err_t parse_species_json(const char *json, terrarium_species_catalog_t *out_catalog);
+static void network_update_certificate_plan(void);
+
+static void network_update_certificate_plan(void)
+{
+    if (!s_ctx.config.use_tls) {
+        s_ctx.cert_auto_pending = false;
+        s_ctx.cert_backoff_ms = NETWORK_CERT_BACKOFF_MIN_MS;
+        s_ctx.cert_next_attempt_us = 0;
+        return;
+    }
+    if (controller_cert_store_has_custom()) {
+        s_ctx.cert_auto_pending = false;
+        s_ctx.cert_backoff_ms = NETWORK_CERT_BACKOFF_MIN_MS;
+        s_ctx.cert_next_attempt_us = 0;
+        return;
+    }
+    if (s_ctx.config.auto_provision_root_ca) {
+        if (s_ctx.cert_backoff_ms == 0) {
+            s_ctx.cert_backoff_ms = NETWORK_CERT_BACKOFF_MIN_MS;
+        }
+        s_ctx.cert_auto_pending = true;
+    } else {
+        s_ctx.cert_auto_pending = false;
+    }
+}
 
 esp_err_t network_manager_init(const app_config_t *config)
 {
     if (!config) {
         return ESP_ERR_INVALID_ARG;
     }
+    controller_cert_store_init();
     app_config_t new_cfg = *config;
     if (s_ctx.started) {
         bool wifi_credentials_changed = (strncmp(s_ctx.config.ssid, new_cfg.ssid, sizeof(new_cfg.ssid)) != 0) ||
@@ -131,6 +172,8 @@ esp_err_t network_manager_init(const app_config_t *config)
         if (host_changed) {
             s_ctx.species_loaded = false;
             memset(&s_ctx.species, 0, sizeof(s_ctx.species));
+            s_ctx.cert_backoff_ms = NETWORK_CERT_BACKOFF_MIN_MS;
+            s_ctx.cert_next_attempt_us = 0;
         }
         if (wifi_credentials_changed && s_ctx.wifi_initialized) {
             wifi_config_t wifi_cfg = {0};
@@ -144,9 +187,13 @@ esp_err_t network_manager_init(const app_config_t *config)
             ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "reconnect wifi");
             network_set_state(NETWORK_STATE_CONNECTING);
         }
+        network_update_certificate_plan();
         return ESP_OK;
     }
     s_ctx.config = new_cfg;
+    s_ctx.cert_backoff_ms = NETWORK_CERT_BACKOFF_MIN_MS;
+    s_ctx.cert_next_attempt_us = 0;
+    network_update_certificate_plan();
     return network_manager_start(&s_ctx.config);
 }
 
@@ -403,6 +450,61 @@ esp_err_t network_manager_upload_dome_ota(const char *path)
     return enqueue_ota_command(NETWORK_CMD_OTA_DOME, path);
 }
 
+esp_err_t network_manager_import_root_ca_from_buffer(const uint8_t *data, size_t len)
+{
+    return network_import_root_ca_from_buffer_internal(data, len);
+}
+
+esp_err_t network_manager_import_root_ca_from_file(const char *path)
+{
+    if (!path || path[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = controller_cert_store_import_from_file(path);
+    if (err == ESP_OK) {
+        s_ctx.cert_auto_pending = false;
+        s_ctx.cert_backoff_ms = NETWORK_CERT_BACKOFF_MIN_MS;
+        s_ctx.cert_next_attempt_us = 0;
+        network_update_certificate_plan();
+    }
+    return err;
+}
+
+esp_err_t network_manager_auto_provision_root_ca(void)
+{
+    if (!s_ctx.command_queue) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    QueueHandle_t response = xQueueCreate(1, sizeof(esp_err_t));
+    if (!response) {
+        return ESP_ERR_NO_MEM;
+    }
+    network_command_t command = {.type = NETWORK_CMD_CERT_PROVISION};
+    command.payload.provision.response = response;
+    if (xQueueSend(s_ctx.command_queue, &command, pdMS_TO_TICKS(NETWORK_CMD_TIMEOUT_MS)) != pdTRUE) {
+        vQueueDelete(response);
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t result = ESP_ERR_TIMEOUT;
+    if (xQueueReceive(response, &result, pdMS_TO_TICKS(NETWORK_CERT_PROVISION_TIMEOUT_MS)) != pdTRUE) {
+        result = ESP_ERR_TIMEOUT;
+    }
+    vQueueDelete(response);
+    return result;
+}
+
+void network_manager_get_root_ca_status(network_root_ca_status_t *status)
+{
+    if (!status) {
+        return;
+    }
+    controller_cert_store_init();
+    status->custom = controller_cert_store_has_custom();
+    const char *cert = controller_cert_store_get();
+    status->available = (cert != NULL);
+    status->length = cert ? controller_cert_store_length() : 0;
+}
+
 const terrarium_status_t *network_manager_get_cached_status(void)
 {
     return s_ctx.status.valid ? &s_ctx.status : NULL;
@@ -433,7 +535,9 @@ void network_manager_prepare_http_client_config(const app_config_t *cfg,
     out->method = method;
     out->transport_type = cfg->use_tls ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
     if (cfg->use_tls) {
-        out->cert_pem = PANEL_CONTROLLER_ROOT_CA_PEM;
+        out->cert_pem = controller_cert_store_get();
+        out->common_name = cfg->controller_host;
+        out->skip_cert_common_name_check = false;
     }
 }
 
@@ -444,6 +548,25 @@ static void network_task(void *arg)
     while (1) {
         EventBits_t bits = xEventGroupWaitBits(s_ctx.wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(200));
         if (!(bits & WIFI_CONNECTED_BIT)) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+
+        if (s_ctx.config.use_tls && s_ctx.cert_auto_pending && !controller_cert_store_has_custom()) {
+            uint64_t now_us = esp_timer_get_time();
+            if (s_ctx.cert_next_attempt_us == 0 || now_us >= s_ctx.cert_next_attempt_us) {
+                esp_err_t err = network_provision_root_ca_internal();
+                if (err == ESP_OK) {
+                    s_ctx.cert_auto_pending = false;
+                    s_ctx.cert_backoff_ms = NETWORK_CERT_BACKOFF_MIN_MS;
+                    s_ctx.cert_next_attempt_us = 0;
+                    continue;
+                }
+                s_ctx.cert_next_attempt_us = now_us + (uint64_t)s_ctx.cert_backoff_ms * 1000ULL;
+                s_ctx.cert_backoff_ms = MIN(s_ctx.cert_backoff_ms * 2, NETWORK_CERT_BACKOFF_MAX_MS);
+                network_report_error(err, "cert provision failed");
+                network_set_state(NETWORK_STATE_CONNECTING);
+            }
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
@@ -489,6 +612,19 @@ static void network_task(void *arg)
             case NETWORK_CMD_OTA_DOME:
                 err = network_upload_ota_internal("/api/ota/dome", command.payload.ota.path);
                 break;
+            case NETWORK_CMD_CERT_PROVISION: {
+                esp_err_t result = network_provision_root_ca_internal();
+                if (command.payload.provision.response) {
+                    xQueueSend(command.payload.provision.response, &result, 0);
+                }
+                if (result == ESP_OK) {
+                    s_ctx.cert_auto_pending = false;
+                    s_ctx.cert_backoff_ms = NETWORK_CERT_BACKOFF_MIN_MS;
+                    s_ctx.cert_next_attempt_us = 0;
+                }
+                err = result;
+                break;
+            }
             default:
                 break;
             }
@@ -579,6 +715,79 @@ static void network_invoke_species_cb(void)
     if (s_ctx.species_cb && s_ctx.species.count > 0) {
         s_ctx.species_cb(&s_ctx.species, s_ctx.species_ctx);
     }
+}
+
+static esp_err_t network_import_root_ca_from_buffer_internal(const uint8_t *data, size_t len)
+{
+    esp_err_t err = controller_cert_store_import(data, len);
+    if (err == ESP_OK) {
+        s_ctx.cert_auto_pending = false;
+        s_ctx.cert_backoff_ms = NETWORK_CERT_BACKOFF_MIN_MS;
+        s_ctx.cert_next_attempt_us = 0;
+        network_update_certificate_plan();
+    }
+    return err;
+}
+
+static esp_err_t network_fetch_root_ca(uint16_t port, network_http_response_buffer_t *resp)
+{
+    esp_http_client_config_t cfg = {0};
+    cfg.host = s_ctx.config.controller_host;
+    cfg.path = NETWORK_CERT_PROVISION_PATH;
+    cfg.port = port;
+    cfg.disable_auto_redirect = false;
+    cfg.timeout_ms = 5000;
+    cfg.method = HTTP_METHOD_GET;
+    cfg.event_handler = network_http_event_handler_cb;
+    cfg.user_data = resp;
+    cfg.transport_type = HTTP_TRANSPORT_OVER_TCP;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = esp_http_client_perform(client);
+    if (err == ESP_OK) {
+        int status = esp_http_client_get_status_code(client);
+        if (status != 200) {
+            err = ESP_FAIL;
+        }
+    }
+    esp_http_client_cleanup(client);
+    return err;
+}
+
+static esp_err_t network_provision_root_ca_internal(void)
+{
+    network_http_response_buffer_t resp = {0};
+    esp_err_t err = network_fetch_root_ca(s_ctx.config.controller_port, &resp);
+    if (err != ESP_OK && s_ctx.config.controller_port != 80) {
+        if (resp.buffer) {
+            free(resp.buffer);
+            resp.buffer = NULL;
+            resp.length = 0;
+            resp.capacity = 0;
+        }
+        err = network_fetch_root_ca(80, &resp);
+    }
+    if (err != ESP_OK) {
+        if (resp.buffer) {
+            free(resp.buffer);
+        }
+        return err;
+    }
+    if (!resp.buffer || resp.length == 0) {
+        if (resp.buffer) {
+            free(resp.buffer);
+        }
+        return ESP_ERR_INVALID_SIZE;
+    }
+    esp_err_t import_err = network_import_root_ca_from_buffer_internal((const uint8_t *)resp.buffer, resp.length + 1);
+    if (import_err == ESP_OK) {
+        ESP_LOGI(TAG, "Root CA provisioned (%d bytes)", resp.length);
+    }
+    free(resp.buffer);
+    return import_err;
 }
 
 static esp_err_t http_perform(const char *path,

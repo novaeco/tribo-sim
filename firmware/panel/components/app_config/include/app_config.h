@@ -16,8 +16,9 @@ extern "C" {
 #define APP_CONFIG_DEFAULT_HOST        "192.168.4.1"
 #define APP_CONFIG_DEFAULT_PORT        443
 #define APP_CONFIG_DEFAULT_USE_TLS     true
-#define APP_CONFIG_DEFAULT_LANGUAGE    "fr"
-#define APP_CONFIG_DEFAULT_SPECIES_KEY "builtin:pogona_vitticeps"
+#define APP_CONFIG_DEFAULT_LANGUAGE          "fr"
+#define APP_CONFIG_DEFAULT_SPECIES_KEY       "builtin:pogona_vitticeps"
+#define APP_CONFIG_DEFAULT_AUTO_PROVISION_CA true
 
 #define APP_CONFIG_MAX_SSID_LEN        32
 #define APP_CONFIG_MAX_PASSWORD_LEN    64
@@ -31,6 +32,7 @@ typedef struct {
     bool use_tls;
     char language[3];
     char species_key[48];
+    bool auto_provision_root_ca;
 } app_config_t;
 
 void app_config_get_defaults(app_config_t *cfg);
