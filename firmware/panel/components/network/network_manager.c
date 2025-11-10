@@ -892,6 +892,7 @@ static void parse_status_json(const char *json, terrarium_status_t *out_status)
         cJSON *h = cJSON_GetObjectItem(env, "humidity");
         cJSON *p = cJSON_GetObjectItem(env, "pressure");
         cJSON *u = cJSON_GetObjectItem(env, "uvi");
+        cJSON *irr = cJSON_GetObjectItem(env, "irradiance_uW_cm2");
         out_status->env.valid = true;
         if (cJSON_IsNumber(t)) {
             out_status->env.temperature_c = t->valuedouble;
@@ -904,6 +905,9 @@ static void parse_status_json(const char *json, terrarium_status_t *out_status)
         }
         if (cJSON_IsNumber(u)) {
             out_status->env.uvi = u->valuedouble;
+        }
+        if (cJSON_IsNumber(irr)) {
+            out_status->env.irradiance_uW_cm2 = irr->valuedouble;
         }
     }
 
@@ -968,6 +972,8 @@ static void parse_status_json(const char *json, terrarium_status_t *out_status)
         cJSON *flags = cJSON_GetObjectItem(dome, "flags");
         cJSON *heatsink = cJSON_GetObjectItem(dome, "heatsink_c");
         cJSON *uvi = cJSON_GetObjectItem(dome, "uvi");
+        cJSON *irr = cJSON_GetObjectItem(dome, "irradiance_uW_cm2");
+        cJSON *fault = cJSON_GetObjectItem(dome, "uvi_fault");
         if (cJSON_IsNumber(status)) {
             out_status->dome.status = status->valueint;
         }
@@ -980,6 +986,12 @@ static void parse_status_json(const char *json, terrarium_status_t *out_status)
         if (cJSON_IsNumber(uvi)) {
             out_status->dome.uvi = uvi->valuedouble;
         }
+        if (cJSON_IsNumber(irr)) {
+            out_status->dome.irradiance_uW_cm2 = irr->valuedouble;
+        }
+        if (cJSON_IsBool(fault)) {
+            out_status->dome.uvi_fault = cJSON_IsTrue(fault);
+        }
     }
 
     cJSON *climate = cJSON_GetObjectItem(root, "climate");
@@ -991,6 +1003,10 @@ static void parse_status_json(const char *json, terrarium_status_t *out_status)
         cJSON *temp_sp = cJSON_GetObjectItem(climate, "temp_setpoint");
         cJSON *hum_sp = cJSON_GetObjectItem(climate, "humidity_setpoint");
         cJSON *uvi_target = cJSON_GetObjectItem(climate, "uvi_target");
+        cJSON *uvi_valid = cJSON_GetObjectItem(climate, "uvi_valid");
+        cJSON *uvi_measured = cJSON_GetObjectItem(climate, "uvi_measured");
+        cJSON *uvi_error = cJSON_GetObjectItem(climate, "uvi_error");
+        cJSON *irradiance = cJSON_GetObjectItem(climate, "irradiance_uW_cm2");
         if (cJSON_IsBool(heater)) {
             out_status->climate.heater_on = cJSON_IsTrue(heater);
         }
@@ -1008,6 +1024,18 @@ static void parse_status_json(const char *json, terrarium_status_t *out_status)
         }
         if (cJSON_IsNumber(uvi_target)) {
             out_status->climate.uvi_target = uvi_target->valuedouble;
+        }
+        if (cJSON_IsBool(uvi_valid)) {
+            out_status->climate.uvi_valid = cJSON_IsTrue(uvi_valid);
+        }
+        if (cJSON_IsNumber(uvi_measured)) {
+            out_status->climate.uvi_measured = uvi_measured->valuedouble;
+        }
+        if (cJSON_IsNumber(uvi_error)) {
+            out_status->climate.uvi_error = uvi_error->valuedouble;
+        }
+        if (cJSON_IsNumber(irradiance)) {
+            out_status->climate.irradiance_uW_cm2 = irradiance->valuedouble;
         }
     }
 

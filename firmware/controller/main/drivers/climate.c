@@ -431,6 +431,20 @@ void climate_tick(const terra_sensors_t *sensors, int minute_of_day, climate_sta
     }
     s_state.fan_pwm_percent = compute_fan_pwm(profile, is_day, has_humidity, humidity_value);
 
+    s_state.uvi_measured = NAN;
+    s_state.uvi_error = NAN;
+    s_state.irradiance_uW_cm2 = NAN;
+    s_state.uvi_valid = false;
+    if (s_measurement_mutex && xSemaphoreTake(s_measurement_mutex, 0) == pdTRUE) {
+        if (s_measurement_valid && s_measurement.uvi_valid) {
+            s_state.uvi_measured = s_measurement.uvi;
+            s_state.irradiance_uW_cm2 = s_measurement.irradiance_uW_cm2;
+            s_state.uvi_error = s_measurement.uvi_drift;
+            s_state.uvi_valid = true;
+        }
+        xSemaphoreGive(s_measurement_mutex);
+    }
+
     if (out_state) {
         *out_state = s_state;
     }

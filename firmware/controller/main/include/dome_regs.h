@@ -33,9 +33,11 @@
 #define DOME_REG_FAN_PWM_H            (DOME_REG_BLOCK_FAN + 2)
 
 #define DOME_REG_BLOCK_UVI            0x12
-#define DOME_REG_BLOCK_UVI_LEN        2
-#define DOME_REG_UVI_L                (DOME_REG_BLOCK_UVI + 0)
-#define DOME_REG_UVI_H                (DOME_REG_BLOCK_UVI + 1)
+#define DOME_REG_BLOCK_UVI_LEN        4
+#define DOME_REG_UVI_IRR_L            (DOME_REG_BLOCK_UVI + 0)
+#define DOME_REG_UVI_IRR_H            (DOME_REG_BLOCK_UVI + 1)
+#define DOME_REG_UVI_INDEX_L          (DOME_REG_BLOCK_UVI + 2)
+#define DOME_REG_UVI_INDEX_H          (DOME_REG_BLOCK_UVI + 3)
 
 #define DOME_REG_BLOCK_HEATSINK       0x20
 #define DOME_REG_BLOCK_HEATSINK_LEN   2

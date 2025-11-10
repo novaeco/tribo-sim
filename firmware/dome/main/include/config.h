@@ -28,6 +28,19 @@
 #define DOME_NTC_SUPPLY_MV       3300.0f       /* Measured rail feeding the divider */
 #define DOME_NTC_OVERSAMPLE      8             /* Number of ADC samples to average */
 
+// UVI photodiode sensing (default: analog front-end on ADC1 channel 3 / GPIO3)
+#define DOME_UVI_SENSOR_MODE_ADC 0
+#define DOME_UVI_SENSOR_MODE_I2C 1
+#define DOME_UVI_SENSOR_MODE     DOME_UVI_SENSOR_MODE_ADC
+#define DOME_UVI_ADC_CHANNEL     ADC_CHANNEL_3
+#define DOME_UVI_ADC_ATTEN       ADC_ATTEN_DB_11
+#define DOME_UVI_ADC_OVERSAMPLE  16
+#define DOME_UVI_SUPPLY_MV       3300.0f
+#define DOME_UVI_RESP_GAIN_UWCM2_PER_V  18.75f  /* µW/cm² per volt (tunable with calibration) */
+#define DOME_UVI_RESP_OFFSET_UWCM2      0.0f    /* Offset compensation */
+#define DOME_UVI_FILTER_ALPHA           0.18f   /* IIR smoothing coefficient */
+#define DOME_UVI_SAMPLE_PERIOD_MS       50      /* Minimum polling period */
+
 // Interlock capot (GPIO input, active-low, pull-up). Choose a safe pin.
 #define DOME_INTERLOCK_GPIO 17
 

@@ -31,6 +31,10 @@ typedef struct {
     terra_sensors_t sensors;
     float temp_drift_c;
     float humidity_drift_pct;
+    float uvi;
+    float irradiance_uW_cm2;
+    float uvi_drift;
+    bool  uvi_valid;
     int64_t timestamp_ms;
 } climate_measurement_t;
 
@@ -46,6 +50,10 @@ typedef struct {
     uint8_t fan_pwm_percent;
     float temp_error_c;
     float humidity_error_pct;
+    float uvi_measured;
+    float uvi_error;
+    float irradiance_uW_cm2;
+    bool  uvi_valid;
 } climate_state_t;
 
 esp_err_t climate_init(void);

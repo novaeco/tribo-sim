@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -15,6 +16,7 @@
 #include "drivers/ws2812_rmt.h"
 #include "drivers/fan_pwm.h"
 #include "drivers/ntc_adc.h"
+#include "drivers/uvi_sensor.h"
 
 static const char *TAG = "DOME_APP";
 
@@ -178,6 +180,20 @@ static void dome_ota_handle_command(uint8_t cmd)
     regfile[DOME_REG_OTA_CMD] = DOME_OTA_CMD_IDLE;
 }
 
+static uint16_t encode_q8_16(float value, float min_value, float max_value)
+{
+    if (!isfinite(value)) {
+        value = 0.0f;
+    }
+    if (value < min_value) {
+        value = min_value;
+    }
+    if (value > max_value) {
+        value = max_value;
+    }
+    return (uint16_t)lroundf(value * 256.0f);
+}
+
 static void dome_apply_outputs(bool force_uv_off)
 {
     uint16_t cct_day = rd16(DOME_REG_CCT_DAY_L);
@@ -201,7 +217,7 @@ static void dome_apply_outputs(bool force_uv_off)
         uvb_clamp = DOME_UVB_CLAMP_PM_DEFAULT;
     }
 
-    uint8_t status = regfile[DOME_REG_STATUS] & ~(ST_UVA_LIMIT | ST_UVB_LIMIT | ST_INTERLOCK | ST_THERM_HARD | ST_FAN_FAIL);
+    uint8_t status = regfile[DOME_REG_STATUS] & ~(ST_UVA_LIMIT | ST_UVB_LIMIT | ST_INTERLOCK | ST_THERM_HARD | ST_FAN_FAIL | ST_UVI_FAULT);
 
     bool interlock = force_uv_off || interlock_active();
     if (interlock) {
@@ -228,6 +244,31 @@ static void dome_apply_outputs(bool force_uv_off)
     ledc_cc_set(1, cct_warm);
     ledc_cc_set(2, uva_applied);
     ledc_cc_set(3, uvb_applied);
+
+    esp_err_t uvi_err = uvi_sensor_init();
+    if (uvi_err == ESP_OK) {
+        esp_err_t poll_err = uvi_sensor_poll();
+        if (poll_err != ESP_OK) {
+            status |= ST_UVI_FAULT;
+        }
+    } else {
+        status |= ST_UVI_FAULT;
+    }
+
+    uvi_sensor_measurement_t uvi_meas = {0};
+    if (uvi_sensor_get(&uvi_meas) && uvi_meas.valid) {
+        uint16_t irr_q8 = encode_q8_16(fmaxf(0.0f, uvi_meas.irradiance_uW_cm2), 0.0f, 255.0f);
+        uint16_t uvi_q8 = encode_q8_16(fmaxf(0.0f, uvi_meas.uvi), 0.0f, 255.0f);
+        wr16(DOME_REG_UVI_IRR_L, irr_q8);
+        wr16(DOME_REG_UVI_INDEX_L, uvi_q8);
+        if (uvi_meas.fault) {
+            status |= ST_UVI_FAULT;
+        }
+    } else {
+        wr16(DOME_REG_UVI_IRR_L, 0);
+        wr16(DOME_REG_UVI_INDEX_L, 0);
+        status |= ST_UVI_FAULT;
+    }
 
     // Compute crude fan speed request based on heatsink temperature
     float fan_percent = 0.0f;
@@ -256,11 +297,6 @@ static void dome_apply_outputs(bool force_uv_off)
         tlm_flags |= ST_THERM_HARD;
     }
     regfile[DOME_REG_TLM_FLAGS] = tlm_flags;
-
-    // Derived UVI (placeholder if no sensor connected)
-    uint16_t uvi_q8 = (uint16_t)((uvb_applied * 0.001f) * 256.0f);
-    regfile[DOME_REG_UVI_L] = (uint8_t)(uvi_q8 & 0xFF);
-    regfile[DOME_REG_UVI_H] = (uint8_t)(uvi_q8 >> 8);
 }
 
 static void IRAM_ATTR interlock_isr(void *arg)

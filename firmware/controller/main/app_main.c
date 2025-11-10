@@ -42,6 +42,11 @@ static inline void dome_wr16(uint8_t *buf, uint16_t value)
     buf[1] = (uint8_t)(value >> 8);
 }
 
+static inline uint16_t dome_rd16(const uint8_t *buf)
+{
+    return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+}
+
 static inline uint8_t dome_permille_to_reg(int permille)
 {
     if (permille < 0) {
@@ -148,10 +153,27 @@ static void sensors_task(void *arg)
         float hum = 0.0f;
         bool has_temp = pick_temperature(&sensors, &temp);
         bool has_hum = pick_humidity(&sensors, &hum);
+        uint8_t status_reg = 0;
+        bool status_ok = (dome_bus_read(DOME_REG_STATUS, &status_reg, 1) == ESP_OK);
+        uint8_t uvi_raw[DOME_REG_BLOCK_UVI_LEN] = {0};
+        bool uvi_ok = (dome_bus_read(DOME_REG_BLOCK_UVI, uvi_raw, sizeof(uvi_raw)) == ESP_OK);
+        float dome_uvi = NAN;
+        float dome_irradiance = NAN;
+        bool uvi_valid = false;
+        if (uvi_ok) {
+            dome_irradiance = (float)dome_rd16(&uvi_raw[0]) / 256.0f;
+            dome_uvi = (float)dome_rd16(&uvi_raw[2]) / 256.0f;
+            uvi_valid = (!status_ok || !(status_reg & ST_UVI_FAULT)) && isfinite(dome_uvi);
+        }
+
         climate_measurement_t measurement = {
             .sensors = sensors,
             .temp_drift_c = NAN,
             .humidity_drift_pct = NAN,
+            .uvi = uvi_valid ? dome_uvi : NAN,
+            .irradiance_uW_cm2 = uvi_valid ? dome_irradiance : NAN,
+            .uvi_drift = NAN,
+            .uvi_valid = uvi_valid,
             .timestamp_ms = esp_timer_get_time() / 1000
         };
         if (has_state) {
@@ -160,6 +182,9 @@ static void sensors_task(void *arg)
             }
             if (has_hum) {
                 measurement.humidity_drift_pct = hum - state.humidity_setpoint_pct;
+            }
+            if (uvi_valid) {
+                measurement.uvi_drift = dome_uvi - state.uvi_target;
             }
         }
         if (lock && xSemaphoreTake(lock, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -207,10 +232,27 @@ static void actuators_task(void *arg)
         }
 
         float allowed_uvi = state.uvi_target;
+        if (state.uvi_valid) {
+            float deficit = state.uvi_target - state.uvi_measured;
+            if (deficit <= 0.0f) {
+                allowed_uvi = 0.0f;
+            } else {
+                allowed_uvi = deficit;
+            }
+        }
+
         float k = 0.0f;
         float calibration_uvi_max = 0.0f;
         if (calib_get_uvb(&k, &calibration_uvi_max) == ESP_OK && calibration_uvi_max > 0.0f) {
-            allowed_uvi = fminf(allowed_uvi, calibration_uvi_max);
+            if (state.uvi_valid) {
+                float headroom = calibration_uvi_max - state.uvi_measured;
+                if (headroom < 0.0f) {
+                    headroom = 0.0f;
+                }
+                allowed_uvi = fminf(allowed_uvi, headroom);
+            } else {
+                allowed_uvi = fminf(allowed_uvi, calibration_uvi_max);
+            }
         }
         if (allowed_uvi < 0.0f) {
             allowed_uvi = 0.0f;
