@@ -20,8 +20,12 @@ idf_component_register(
          "net/httpd.c"
          "net/credentials.c"
          "net/ota_stream.c"
+         "net/ota_manifest.c"
          "species_profiles.c"
          "storage.c"
-    INCLUDE_DIRS "include" "drivers" "net"
+         "ota_state.c"
+         "../common/ota_keys.c"
+         "../common/monocypher.c"
+    INCLUDE_DIRS "include" "drivers" "net" "../common"
     REQUIRES driver esp_wifi esp_http_server nvs_flash esp_timer esp_adc json mbedtls
 )

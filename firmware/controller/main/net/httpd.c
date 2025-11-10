@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 #include "esp_https_server.h"
@@ -12,6 +13,8 @@
 #include "esp_check.h"
 #include "esp_err.h"
 #include "cJSON.h"
+#include "mbedtls/base64.h"
+#include "mbedtls/sha256.h"
 
 #include "drivers/dome_bus.h"
 #include "drivers/dome_i2c.h"
@@ -25,10 +28,88 @@
 #include "net/credentials.h"
 #include "species_profiles.h"
 #include "ota_stream.h"
+#include "ota_manifest.h"
+#include "ota_state.h"
 
 static const char *TAG = "HTTPSD";
 
 static httpd_handle_t s_server = NULL;
+
+#define OTA_MANIFEST_HEADER "X-OTA-Manifest"
+#define OTA_MANIFEST_MAX_HEADER_LEN 4096
+
+static esp_err_t read_manifest_header(httpd_req_t *req, ota_manifest_t *manifest)
+{
+    if (!manifest) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    size_t hdr_len = httpd_req_get_hdr_value_len(req, OTA_MANIFEST_HEADER);
+    if (hdr_len == 0 || hdr_len > OTA_MANIFEST_MAX_HEADER_LEN) {
+        ESP_LOGE(TAG, "Missing or oversized manifest header (%zu)", hdr_len);
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *b64 = calloc(1, hdr_len + 1);
+    if (!b64) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = httpd_req_get_hdr_value_str(req, OTA_MANIFEST_HEADER, b64, hdr_len + 1);
+    if (err != ESP_OK) {
+        free(b64);
+        ESP_LOGE(TAG, "Failed to read manifest header: %s", esp_err_to_name(err));
+        return err;
+    }
+    size_t json_cap = (hdr_len * 3) / 4 + 4;
+    uint8_t *json = calloc(1, json_cap);
+    if (!json) {
+        free(b64);
+        return ESP_ERR_NO_MEM;
+    }
+    size_t json_len = 0;
+    int rc = mbedtls_base64_decode(json, json_cap, &json_len, (const unsigned char *)b64, hdr_len);
+    free(b64);
+    if (rc != 0) {
+        free(json);
+        ESP_LOGE(TAG, "Manifest base64 decode failed (%d)", rc);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    esp_err_t parse_err = ota_manifest_parse((const char *)json, json_len, manifest);
+    free(json);
+    if (parse_err != ESP_OK) {
+        return parse_err;
+    }
+    return ota_manifest_verify(manifest);
+}
+
+static void put_u32_le(uint8_t out[4], uint32_t value)
+{
+    out[0] = (uint8_t)(value & 0xFF);
+    out[1] = (uint8_t)((value >> 8) & 0xFF);
+    out[2] = (uint8_t)((value >> 16) & 0xFF);
+    out[3] = (uint8_t)((value >> 24) & 0xFF);
+}
+
+static esp_err_t dome_write_status_message(const char *msg)
+{
+    uint8_t buf[DOME_REG_OTA_STATUS_MSG_LEN] = {0};
+    if (msg && msg[0]) {
+        strncpy((char *)buf, msg, DOME_REG_OTA_STATUS_MSG_LEN - 1);
+    }
+    return dome_bus_write(DOME_REG_OTA_STATUS_MSG, buf, sizeof(buf));
+}
+
+static esp_err_t dome_stage_manifest(const ota_manifest_t *manifest, const char *message)
+{
+    uint8_t size_buf[4];
+    put_u32_le(size_buf, manifest->image_size);
+    ESP_RETURN_ON_ERROR(dome_bus_write(DOME_REG_OTA_EXPECTED_SIZE_L, size_buf, sizeof(size_buf)), TAG, "dome size");
+    ESP_RETURN_ON_ERROR(dome_bus_write(DOME_REG_OTA_EXPECTED_SHA, manifest->image_sha256, 32), TAG, "dome sha");
+    uint8_t version_buf[DOME_REG_OTA_VERSION_LEN] = {0};
+    strncpy((char *)version_buf, manifest->version, DOME_REG_OTA_VERSION_LEN - 1);
+    ESP_RETURN_ON_ERROR(dome_bus_write(DOME_REG_OTA_VERSION, version_buf, sizeof(version_buf)), TAG, "dome version");
+    uint8_t flags = DOME_OTA_FLAG_META_READY;
+    ESP_RETURN_ON_ERROR(dome_bus_write(DOME_REG_OTA_FLAGS, &flags, 1), TAG, "dome flags");
+    return dome_write_status_message(message);
+}
 
 static esp_err_t send_unauthorized(httpd_req_t *req)
 {
@@ -84,7 +165,10 @@ static const char ROOT_HTML[] =
     "border-bottom:1px solid rgba(255,255,255,0.08);}#statusBanner{padding:12px;border-radius:12px;margin-bottom:16px;font-weight:600;}"
     "#statusBanner.error{background:rgba(220,53,69,0.15);color:#ffb4c0;}#statusBanner.ok{background:rgba(40,167,69,0.18);color:#b7ffce;}"
     "progress{width:100%;height:16px;border-radius:12px;overflow:hidden;background:rgba(255,255,255,0.1);}progress::-webkit-progress-bar{background:transparent;}"
-    "progress::-webkit-progress-value{background:#3a86ff;}details{margin-top:12px;}summary{cursor:pointer;font-weight:600;}""</style></head><body>"
+    "progress::-webkit-progress-value{background:#3a86ff;}details{margin-top:12px;}summary{cursor:pointer;font-weight:600;}"
+    ".ota-block{margin-top:12px;padding:12px;border-radius:12px;background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.08);}""
+    " .ota-block h3{margin:0 0 8px;font-size:1.1rem;} .ota-status-line{font-size:0.85rem;margin-top:6px;color:rgba(255,255,255,0.8);}""
+    " .ota-status-line span{display:block;margin-top:2px;word-break:break-all;}""</style></head><body>"
     "<h1>Terrarium S3</h1>"
     "<div id='statusBanner' class='ok'></div>"
     "<section><label for='languageSelect' data-i18n='language'></label><select id='languageSelect'><option value='fr'>Français</option><option value='en'>English</option><option value='es'>Español</option></select>"
@@ -101,14 +185,16 @@ static const char ROOT_HTML[] =
     "<button id='applyLight' data-i18n='apply_light'></button></section>"
     "<section><h2 data-i18n='telemetry'></h2><div id='chartContainer'><canvas id='telemetryChart'></canvas></div>"
     "<table><thead><tr><th data-i18n='metric'></th><th data-i18n='value'></th></tr></thead><tbody id='telemetryTable'></tbody></table></section>"
-    "<section><h2 data-i18n='ota_updates'></h2><label data-i18n='controller_fw'></label><input id='controllerBin' type='file' accept='.bin'><progress id='controllerProgress' value='0' max='100'></progress><button id='flashController' data-i18n='flash_controller'></button>"
-    "<label data-i18n='dome_fw'></label><input id='domeBin' type='file' accept='.bin'><progress id='domeProgress' value='0' max='100'></progress><button id='flashDome' data-i18n='flash_dome'></button></section>"
+    "<section><h2 data-i18n='ota_updates'></h2><div class='ota-block'><h3 data-i18n='controller_title'></h3><label data-i18n='controller_manifest'></label><input id='controllerManifest' type='file' accept='.json'><label data-i18n='controller_fw'></label><input id='controllerBin' type='file' accept='.bin'><progress id='controllerProgress' value='0' max='100'></progress><div class='ota-status-line'><strong data-i18n='ota_status_label'></strong><span id='controllerStatusText'>--</span></div><button id='flashController' data-i18n='flash_controller'></button></div><div class='ota-block'><h3 data-i18n='dome_title'></h3><label data-i18n='dome_manifest'></label><input id='domeManifest' type='file' accept='.json'><label data-i18n='dome_fw'></label><input id='domeBin' type='file' accept='.bin'><progress id='domeProgress' value='0' max='100'></progress><div class='ota-status-line'><strong data-i18n='ota_status_label'></strong><span id='domeStatusText'>--</span></div><button id='flashDome' data-i18n='flash_dome'></button></div></section>"
     "<section><h2 data-i18n='alarms'></h2><button id='toggleMute'></button><div id='alarmState'></div></section>"
     "<section><h2 data-i18n='calibration'></h2><label data-i18n='uvi_max'></label><input id='calUviMax' type='number' step='0.1'><label data-i18n='cal_duty'></label><input id='calDuty' type='number'><label data-i18n='cal_measured'></label><input id='calMeasured' type='number' step='0.01'><button id='applyCalibration' data-i18n='apply_calibration'></button></section>"
-    "<script>const I18N={fr:{language:'Langue',species_profile:'Profil d\'espèce',apply_profile:'Appliquer le profil',custom_profile:'Profil personnalisé',profile_name:'Nom du profil',save_custom:'Enregistrer',custom_schedule_hint:'JSON climate_schedule_t',light_control:'Contrôle lumineux',cct_day:'CCT Jour (‰)',cct_warm:'CCT Chaud (‰)',uva_set:'UVA consigne (‰)',uva_clamp:'UVA limite (‰)',uvb_set:'UVB consigne (‰)',uvb_clamp:'UVB limite (‰)',uvb_period:'Période UVB (s)',uvb_duty:'Duty UVB (‰)',sky_mode:'Mode ciel',apply_light:'Appliquer',telemetry:'Télémétries en temps réel',metric:'Mesure',value:'Valeur',ota_updates:'Mises à jour OTA',controller_fw:'Firmware contrôleur (.bin)',flash_controller:'Flasher contrôleur',dome_fw:'Firmware dôme (.bin)',flash_dome:'Flasher dôme',alarms:'Alarmes',apply_calibration:'Enregistrer calibration',calibration:'Calibration UVB',uvi_max:'UVI cible',cal_duty:'Duty mesuré (‰)',cal_measured:'UVI mesuré',uvi_fault:'Capteur UVI en défaut'},en:{language:'Language',species_profile:'Species profile',apply_profile:'Apply profile',custom_profile:'Custom profile',profile_name:'Profile name',save_custom:'Save custom profile',custom_schedule_hint:'climate_schedule_t JSON payload',light_control:'Lighting control',cct_day:'CCT Day (‰)',cct_warm:'CCT Warm (‰)',uva_set:'UVA setpoint (‰)',uva_clamp:'UVA clamp (‰)',uvb_set:'UVB setpoint (‰)',uvb_clamp:'UVB clamp (‰)',uvb_period:'UVB period (s)',uvb_duty:'UVB duty (‰)',sky_mode:'Sky mode',apply_light:'Apply',telemetry:'Real-time telemetry',metric:'Metric',value:'Value',ota_updates:'OTA updates',controller_fw:'Controller firmware (.bin)',flash_controller:'Flash controller',dome_fw:'Dome firmware (.bin)',flash_dome:'Flash dome',alarms:'Alarms',apply_calibration:'Apply calibration',calibration:'UVB calibration',uvi_max:'Target UVI',cal_duty:'Duty measured (‰)',cal_measured:'Measured UVI',uvi_fault:'UVI sensor fault'},es:{language:'Idioma',species_profile:'Perfil de especie',apply_profile:'Aplicar perfil',custom_profile:'Perfil personalizado',profile_name:'Nombre del perfil',save_custom:'Guardar personalizado',custom_schedule_hint:'JSON climate_schedule_t',light_control:'Control lumínico',cct_day:'CCT Día (‰)',cct_warm:'CCT Cálido (‰)',uva_set:'UVA consigna (‰)',uva_clamp:'UVA límite (‰)',uvb_set:'UVB consigna (‰)',uvb_clamp:'UVB límite (‰)',uvb_period:'Periodo UVB (s)',uvb_duty:'Duty UVB (‰)',sky_mode:'Modo cielo',apply_light:'Aplicar',telemetry:'Telemetría en tiempo real',metric:'Métrica',value:'Valor',ota_updates:'Actualizaciones OTA',controller_fw:'Firmware controlador (.bin)',flash_controller:'Flashear controlador',dome_fw:'Firmware cúpula (.bin)',flash_dome:'Flashear cúpula',alarms:'Alarmas',apply_calibration:'Guardar calibración',calibration:'Calibración UVB',uvi_max:'UVI objetivo',cal_duty:'Duty medido (‰)',cal_measured:'UVI medido',uvi_fault:'Sensor UVI en fallo'}};let lang='fr';const banner=document.getElementById('statusBanner');function setLang(l){lang=l;const dict=I18N[l]||I18N.fr;document.querySelectorAll('[data-i18n]').forEach(el=>{const k=el.getAttribute('data-i18n');if(dict[k])el.textContent=dict[k];});document.querySelectorAll('[data-i18n-placeholder]').forEach(el=>{const k=el.getAttribute('data-i18n-placeholder');if(dict[k])el.setAttribute('placeholder',dict[k]);});document.getElementById('toggleMute').textContent=dict.alarms+' – mute';}
-    "async function fetchJSON(url,opts){const r=await fetch(url,opts);if(!r.ok) throw new Error(await r.text());return r.json();}function permilleFromReg(v){return v*40;}function regFromPermille(p){return Math.min(255,Math.max(0,Math.round(p/40)));}function updateBanner(text,isErr){banner.textContent=text;banner.className=isErr?'error':'ok';}const chartCtx=document.getElementById('telemetryChart').getContext('2d');const chartState={points:[]};function renderChart(){const ctx=chartCtx;const {width,height}=ctx.canvas;ctx.clearRect(0,0,width,height);ctx.strokeStyle='#2dd4ff';ctx.lineWidth=2;ctx.beginPath();chartState.points.forEach((p,i)=>{const x=width*(i/(chartState.points.length-1||1));const y=height*(1-p.tempNorm);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();ctx.strokeStyle='#fbbf24';ctx.beginPath();chartState.points.forEach((p,i)=>{const x=width*(i/(chartState.points.length-1||1));const y=height*(1-p.humNorm);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();}
-    "async function refreshSpecies(){const data=await fetchJSON('/api/species');const select=document.getElementById('speciesSelect');select.innerHTML='';const addOpt=(key,label)=>{const o=document.createElement('option');o.value=key;o.textContent=label;select.appendChild(o);};data.builtin.forEach(p=>{const label=(I18N[lang]?I18N[lang].species_profile: 'Profile')+': '+(p.labels[lang]||p.labels.fr);addOpt(p.key,(p.labels[lang]||p.labels.fr));});data.custom.forEach(p=>addOpt(p.key,p.name+' (custom)'));if(data.active_key)select.value=data.active_key;}async function refreshStatus(){try{const status=await fetchJSON('/api/status');const dict=I18N[lang]||I18N.fr;updateBanner(status.summary,false);document.getElementById('cctDay').value=status.light.cct.day;document.getElementById('cctWarm').value=status.light.cct.warm;document.getElementById('uvaSet').value=status.light.uva.set;document.getElementById('uvaClamp').value=status.light.uva.clamp;document.getElementById('uvbSet').value=status.light.uvb.set;document.getElementById('uvbClamp').value=status.light.uvb.clamp;document.getElementById('uvbPeriod').value=status.light.uvb.period_s;document.getElementById('uvbDuty').value=status.light.uvb.duty_pm;document.getElementById('skyMode').value=status.light.sky;document.getElementById('alarmState').textContent=status.alarms.muted?'Muted':'Active';document.getElementById('calUviMax').value=status.calibration.uvi_max.toFixed(2);document.getElementById('calDuty').value=status.calibration.last_duty_pm.toFixed(0);document.getElementById('calMeasured').value=status.calibration.last_uvi.toFixed(2);const table=document.getElementById('telemetryTable');table.innerHTML='';const uviValid=status.climate&&status.climate.uvi_valid;const uviFault=status.dome&&status.dome.uvi_fault;let uviText='--';if(uviValid){uviText=status.climate.uvi_measured.toFixed(2)+' (Δ '+status.climate.uvi_error.toFixed(2)+', '+status.climate.irradiance_uW_cm2.toFixed(1)+' µW/cm²)';}else if(uviFault){const faultText=dict.uvi_fault||'sensor fault';uviText=faultText;}else{uviText=status.env.uvi!==undefined?status.env.uvi.toFixed(2):'--';}const irrText=status.env.irradiance_uW_cm2!==undefined?status.env.irradiance_uW_cm2.toFixed(1):'--';const rows=[['Temp °C',status.env.temperature.toFixed(1)],['Hum %',status.env.humidity.toFixed(1)],['Press hPa',status.env.pressure.toFixed(1)],['UVI',uviText],['Irr µW/cm²',irrText],['Fan %',status.light.fan_pwm.toFixed(0)],['Heatsink °C',status.dome.heatsink_c.toFixed(1)]];rows.forEach(([k,v])=>{const tr=document.createElement('tr');const td1=document.createElement('td');td1.textContent=k;const td2=document.createElement('td');td2.textContent=v;tr.appendChild(td1);tr.appendChild(td2);table.appendChild(tr);});chartState.points.push({tempNorm:Math.min(1,Math.max(0,(status.env.temperature-10)/30)),humNorm:Math.min(1,Math.max(0,status.env.humidity/100))});if(chartState.points.length>120)chartState.points.shift();renderChart();}catch(e){updateBanner('Status error: '+e.message,true);}}
-    "document.getElementById('languageSelect').addEventListener('change',e=>{setLang(e.target.value);refreshSpecies();});document.getElementById('applyLight').addEventListener('click',async()=>{const payload={cct:{day:+cctDay.value,warm:+cctWarm.value},uva:{set:+uvaSet.value,clamp:+uvaClamp.value},uvb:{set:+uvbSet.value,clamp:+uvbClamp.value,period_s:+uvbPeriod.value,duty_pm:+uvbDuty.value},sky:+skyMode.value};await fetchJSON('/api/light/dome0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refreshStatus();});document.getElementById('applySpecies').addEventListener('click',async()=>{const key=document.getElementById('speciesSelect').value;await fetchJSON('/api/species/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});refreshSpecies();});document.getElementById('saveCustom').addEventListener('click',async()=>{const name=document.getElementById('customName').value.trim();if(!name){alert('Name required');return;}try{const schedule=JSON.parse(document.getElementById('customSchedule').value);await fetchJSON('/api/species/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,schedule})});refreshSpecies();}catch(err){alert('Invalid JSON: '+err.message);}});document.getElementById('toggleMute').addEventListener('click',async()=>{const r=await fetchJSON('/api/alarms/mute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:true})});document.getElementById('alarmState').textContent=r.muted?'Muted':'Active';});document.getElementById('applyCalibration').addEventListener('click',async()=>{await fetchJSON('/api/calibrate/uvb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duty_pm:+calDuty.value,uvi:+calMeasured.value,uvi_max:+calUviMax.value})});refreshStatus();});async function uploadFirmware(inputId,url,progressId){const file=document.getElementById(inputId).files[0];if(!file){alert('No file');return;}const formData=new FormData();formData.append('bin',file);const res=await fetch(url,{method:'POST',body:formData});if(!res.ok){throw new Error(await res.text());}const reader=res.body.getReader();const progress=document.getElementById(progressId);let received=0;const contentLength=+(res.headers.get('X-OTA-Size')||file.size);while(true){const {done,value}=await reader.read();if(done)break;received+=value.length;progress.value=Math.min(100,Math.round(received/contentLength*100));}progress.value=100;}document.getElementById('flashController').addEventListener('click',()=>uploadFirmware('controllerBin','/api/ota/controller','controllerProgress').catch(e=>alert(e.message)));document.getElementById('flashDome').addEventListener('click',()=>uploadFirmware('domeBin','/api/ota/dome','domeProgress').catch(e=>alert(e.message)));setLang('fr');refreshSpecies();refreshStatus();setInterval(refreshStatus,5000);</script></body></html>";
+    "<script>const I18N={fr:{language:'Langue',species_profile:'Profil d\'espèce',apply_profile:'Appliquer le profil',custom_profile:'Profil personnalisé',profile_name:'Nom du profil',save_custom:'Enregistrer',custom_schedule_hint:'JSON climate_schedule_t',light_control:'Contrôle lumineux',cct_day:'CCT Jour (‰)',cct_warm:'CCT Chaud (‰)',uva_set:'UVA consigne (‰)',uva_clamp:'UVA limite (‰)',uvb_set:'UVB consigne (‰)',uvb_clamp:'UVB limite (‰)',uvb_period:'Période UVB (s)',uvb_duty:'Duty UVB (‰)',sky_mode:'Mode ciel',apply_light:'Appliquer',telemetry:'Télémétries en temps réel',metric:'Mesure',value:'Valeur',ota_updates:'Mises à jour OTA',controller_title:'Contrôleur',controller_manifest:'Manifeste contrôleur (.json signé)',controller_fw:'Firmware contrôleur (.bin)',flash_controller:'Flasher contrôleur',dome_title:'Dôme',dome_manifest:'Manifeste dôme (.json signé)',dome_fw:'Firmware dôme (.bin)',flash_dome:'Flasher dôme',ota_status_label:'Statut OTA',manifest_required:'Manifeste requis',firmware_required:'Fichier firmware requis',alarms:'Alarmes',apply_calibration:'Enregistrer calibration',calibration:'Calibration UVB',uvi_max:'UVI cible',cal_duty:'Duty mesuré (‰)',cal_measured:'UVI mesuré',uvi_fault:'Capteur UVI en défaut'},en:{language:'Language',species_profile:'Species profile',apply_profile:'Apply profile',custom_profile:'Custom profile',profile_name:'Profile name',save_custom:'Save custom profile',custom_schedule_hint:'climate_schedule_t JSON payload',light_control:'Lighting control',cct_day:'CCT Day (‰)',cct_warm:'CCT Warm (‰)',uva_set:'UVA setpoint (‰)',uva_clamp:'UVA clamp (‰)',uvb_set:'UVB setpoint (‰)',uvb_clamp:'UVB clamp (‰)',uvb_period:'UVB period (s)',uvb_duty:'UVB duty (‰)',sky_mode:'Sky mode',apply_light:'Apply',telemetry:'Real-time telemetry',metric:'Metric',value:'Value',ota_updates:'OTA updates',controller_title:'Controller',controller_manifest:'Controller manifest (signed .json)',controller_fw:'Controller firmware (.bin)',flash_controller:'Flash controller',dome_title:'Dome',dome_manifest:'Dome manifest (signed .json)',dome_fw:'Dome firmware (.bin)',flash_dome:'Flash dome',ota_status_label:'OTA status',manifest_required:'Manifest required',firmware_required:'Firmware file required',alarms:'Alarms',apply_calibration:'Apply calibration',calibration:'UVB calibration',uvi_max:'Target UVI',cal_duty:'Duty measured (‰)',cal_measured:'Measured UVI',uvi_fault:'UVI sensor fault'},es:{language:'Idioma',species_profile:'Perfil de especie',apply_profile:'Aplicar perfil',custom_profile:'Perfil personalizado',profile_name:'Nombre del perfil',save_custom:'Guardar personalizado',custom_schedule_hint:'JSON climate_schedule_t',light_control:'Control lumínico',cct_day:'CCT Día (‰)',cct_warm:'CCT Cálido (‰)',uva_set:'UVA consigna (‰)',uva_clamp:'UVA límite (‰)',uvb_set:'UVB consigna (‰)',uvb_clamp:'UVB límite (‰)',uvb_period:'Periodo UVB (s)',uvb_duty:'Duty UVB (‰)',sky_mode:'Modo cielo',apply_light:'Aplicar',telemetry:'Telemetría en tiempo real',metric:'Métrica',value:'Valor',ota_updates:'Actualizaciones OTA',controller_title:'Controlador',controller_manifest:'Manifiesto controlador (.json firmado)',controller_fw:'Firmware controlador (.bin)',flash_controller:'Flashear controlador',dome_title:'Cúpula',dome_manifest:'Manifiesto cúpula (.json firmado)',dome_fw:'Firmware cúpula (.bin)',flash_dome:'Flashear cúpula',ota_status_label:'Estado OTA',manifest_required:'Manifiesto requerido',firmware_required:'Archivo de firmware requerido',alarms:'Alarmas',apply_calibration:'Guardar calibración',calibration:'Calibración UVB',uvi_max:'UVI objetivo',cal_duty:'Duty medido (‰)',cal_measured:'UVI medido',uvi_fault:'Sensor UVI en fallo'}};let lang='fr';const banner=document.getElementById('statusBanner');function setLang(l){lang=l;const dict=I18N[l]||I18N.fr;document.querySelectorAll('[data-i18n]').forEach(el=>{const k=el.getAttribute('data-i18n');if(dict[k])el.textContent=dict[k];});document.querySelectorAll('[data-i18n-placeholder]').forEach(el=>{const k=el.getAttribute('data-i18n-placeholder');if(dict[k])el.setAttribute('placeholder',dict[k]);});document.getElementById('toggleMute').textContent=dict.alarms+' – mute';}async function fetchJSON(url,opts){const r=await fetch(url,opts);if(!r.ok) throw new Error(await r.text());return r.json();}function permilleFromReg(v){return v*40;}function regFromPermille(p){return Math.min(255,Math.max(0,Math.round(p/40)));}function encodeManifest(text){return btoa(unescape(encodeURIComponent(text)));}function describeOta(entry){if(!entry)return'--';const parts=[];if(entry.version)parts.push(entry.version);if(entry.message)parts.push(entry.message);else if(entry.state)parts.push(entry.state);if(entry.sha256)parts.push(entry.sha256.slice(0,8)+'…');return parts.join(' • ');}function updateBanner(text,isErr){banner.textContent=text;banner.className=isErr?'error':'ok';}const chartCtx=document.getElementById('telemetryChart').getContext('2d');const chartState={points:[]};function renderChart(){const ctx=chartCtx;const {width,height}=ctx.canvas;ctx.clearRect(0,0,width,height);ctx.strokeStyle='#2dd4ff';ctx.lineWidth=2;ctx.beginPath();chartState.points.forEach((p,i)=>{const x=width*(i/(chartState.points.length-1||1));const y=height*(1-p.tempNorm);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();ctx.strokeStyle='#fbbf24';ctx.beginPath();chartState.points.forEach((p,i)=>{const x=width*(i/(chartState.points.length-1||1));const y=height*(1-p.humNorm);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();}async function refreshSpecies(){const data=await fetchJSON('/api/species');const select=document.getElementById('speciesSelect');select.innerHTML='';const addOpt=(key,label)=>{const o=document.createElement('option');o.value=key;o.textContent=label;select.appendChild(o);};data.builtin.forEach(p=>{const label=(I18N[lang]?I18N[lang].species_profile: 'Profile')+': '+(p.labels[lang]||p.labels.fr);addOpt(p.key,(p.labels[lang]||p.labels.fr));});data.custom.forEach(p=>addOpt(p.key,p.name+' (custom)'));if(data.active_key)select.value=data.active_key;}async function refreshStatus(){try{const status=await fetchJSON('/api/status');const dict=I18N[lang]||I18N.fr;updateBanner(status.summary,false);document.getElementById('cctDay').value=status.light.cct.day;document.getElementById('cctWarm').value=status.light.cct.warm;document.getElementById('uvaSet').value=status.light.uva.set;document.getElementById('uvaClamp').value=status.light.uva.clamp;document.getElementById('uvbSet').value=status.light.uvb.set;document.getElementById('uvbClamp').value=status.light.uvb.clamp;document.getElementById('uvbPeriod').value=status.light.uvb.period_s;document.getElementById('uvbDuty').value=status.light.uvb.duty_pm;document.getElementById('skyMode').value=status.light.sky;document.getElementById('alarmState').textContent=status.alarms.muted?'Muted':'Active';document.getElementById('calUviMax').value=status.calibration.uvi_max.toFixed(2);document.getElementById('calDuty').value=status.calibration.last_duty_pm.toFixed(0);document.getElementById('calMeasured').value=status.calibration.last_uvi.toFixed(2);const table=document.getElementById('telemetryTable');table.innerHTML='';const uviValid=status.climate&&status.climate.uvi_valid;const uviFault=status.dome&&status.dome.uvi_fault;let uviText='--';if(uviValid){uviText=status.climate.uvi_measured.toFixed(2)+' (Δ '+status.climate.uvi_error.toFixed(2)+', '+status.climate.irradiance_uW_cm2.toFixed(1)+' µW/cm²)';}else if(uviFault){const faultText=dict.uvi_fault||'sensor fault';uviText=faultText;}else{uviText=status.env.uvi!==undefined?status.env.uvi.toFixed(2):'--';}const irrText=status.env.irradiance_uW_cm2!==undefined?status.env.irradiance_uW_cm2.toFixed(1):'--';const rows=[['Temp °C',status.env.temperature.toFixed(1)],['Hum %',status.env.humidity.toFixed(1)],['Press hPa',status.env.pressure.toFixed(1)],['UVI',uviText],['Irr µW/cm²',irrText],['Fan %',status.light.fan_pwm.toFixed(0)],['Heatsink °C',status.dome.heatsink_c.toFixed(1)]];rows.forEach(([k,v])=>{const tr=document.createElement('tr');const td1=document.createElement('td');td1.textContent=k;const td2=document.createElement('td');td2.textContent=v;tr.appendChild(td1);tr.appendChild(td2);table.appendChild(tr);});        const ota=status.ota||{};
+        const controllerStatus=document.getElementById('controllerStatusText');
+        if(controllerStatus)controllerStatus.textContent=describeOta(ota.controller);
+        const domeStatus=document.getElementById('domeStatusText');
+        if(domeStatus)domeStatus.textContent=describeOta(ota.dome);
+chartState.points.push({tempNorm:Math.min(1,Math.max(0,(status.env.temperature-10)/30)),humNorm:Math.min(1,Math.max(0,status.env.humidity/100))});if(chartState.points.length>120)chartState.points.shift();renderChart();}catch(e){updateBanner('Status error: '+e.message,true);}}
+    "document.getElementById('languageSelect').addEventListener('change',e=>{setLang(e.target.value);refreshSpecies();});document.getElementById('applyLight').addEventListener('click',async()=>{const payload={cct:{day:+cctDay.value,warm:+cctWarm.value},uva:{set:+uvaSet.value,clamp:+uvaClamp.value},uvb:{set:+uvbSet.value,clamp:+uvbClamp.value,period_s:+uvbPeriod.value,duty_pm:+uvbDuty.value},sky:+skyMode.value};await fetchJSON('/api/light/dome0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refreshStatus();});document.getElementById('applySpecies').addEventListener('click',async()=>{const key=document.getElementById('speciesSelect').value;await fetchJSON('/api/species/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});refreshSpecies();});document.getElementById('saveCustom').addEventListener('click',async()=>{const name=document.getElementById('customName').value.trim();if(!name){alert('Name required');return;}try{const schedule=JSON.parse(document.getElementById('customSchedule').value);await fetchJSON('/api/species/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,schedule})});refreshSpecies();}catch(err){alert('Invalid JSON: '+err.message);}});document.getElementById('toggleMute').addEventListener('click',async()=>{const r=await fetchJSON('/api/alarms/mute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:true})});document.getElementById('alarmState').textContent=r.muted?'Muted':'Active';});document.getElementById('applyCalibration').addEventListener('click',async()=>{await fetchJSON('/api/calibrate/uvb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duty_pm:+calDuty.value,uvi:+calMeasured.value,uvi_max:+calUviMax.value})});refreshStatus();});async function uploadFirmware(manifestId,binId,url,progressId){const dict=I18N[lang]||I18N.fr;const manifest=document.getElementById(manifestId).files[0];if(!manifest){alert(dict.manifest_required||'Manifest required');return;}const file=document.getElementById(binId).files[0];if(!file){alert(dict.firmware_required||'Firmware required');return;}const manifestText=await manifest.text();const progress=document.getElementById(progressId);if(progress)progress.value=0;const res=await fetch(url,{method:'POST',headers:{'X-OTA-Manifest':encodeManifest(manifestText),'Content-Type':'application/octet-stream'},body:file});if(!res.ok){throw new Error(await res.text());}if(progress)progress.value=100;try{await res.json();}catch(e){}await refreshStatus();}document.getElementById('flashController').addEventListener('click',()=>uploadFirmware('controllerManifest','controllerBin','/api/ota/controller','controllerProgress').catch(e=>alert(e.message)));document.getElementById('flashDome').addEventListener('click',()=>uploadFirmware('domeManifest','domeBin','/api/ota/dome','domeProgress').catch(e=>alert(e.message)));setLang('fr');refreshSpecies();refreshStatus();setInterval(refreshStatus,5000);</script></body></html>";
 
 static float permille_from_reg(uint8_t reg_value)
 {
@@ -342,6 +428,8 @@ static esp_err_t api_status_handler(httpd_req_t *req)
             }
         }
     }
+
+    ota_state_append_status_json(root);
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -746,28 +834,165 @@ static esp_err_t api_security_rotate(httpd_req_t *req)
 static esp_err_t handle_ota_controller(httpd_req_t *req)
 {
     REQUIRE_AUTH_OR_RETURN(req);
+
+    ota_manifest_t manifest = {0};
+    esp_err_t err = read_manifest_header(req, &manifest);
+    if (err != ESP_OK) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Manifest invalide");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid manifest");
+    }
+    if (!ota_manifest_is_target(&manifest, OTA_TARGET_CONTROLLER)) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Cible manifest erronée");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "manifest target mismatch");
+    }
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Partition courante introuvable");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no running partition");
+    }
+    esp_app_desc_t running_desc = {0};
+    ESP_RETURN_ON_ERROR(esp_ota_get_partition_description(running, &running_desc), TAG, "desc courant");
+
+    if (ota_manifest_compare_versions(running_desc.version, manifest.version) >= 0) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Version non monotone");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "firmware version not newer");
+    }
+
+    esp_err_t state_err = ota_state_begin(OTA_TARGET_CONTROLLER, &manifest, "Manifest validé");
+    if (state_err != ESP_OK) {
+        ESP_LOGW(TAG, "ota_state_begin failed: %s", esp_err_to_name(state_err));
+    }
+
     const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
     if (!partition) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No OTA partition");
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Partition OTA indisponible");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no ota partition");
     }
+
     esp_ota_handle_t handle = 0;
-    ESP_RETURN_ON_ERROR(esp_ota_begin(partition, OTA_SIZE_UNKNOWN, &handle), TAG, "ota begin");
+    err = esp_ota_begin(partition, OTA_SIZE_UNKNOWN, &handle);
+    if (err != ESP_OK) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "esp_ota_begin échec");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota begin failed");
+    }
+
+    mbedtls_sha256_context sha_ctx;
+    mbedtls_sha256_init(&sha_ctx);
+    mbedtls_sha256_starts(&sha_ctx, 0);
+
+    state_err = ota_state_transition(OTA_TARGET_CONTROLLER, OTA_STATE_DOWNLOADING, "Réception en cours");
+    if (state_err != ESP_OK) {
+        ESP_LOGW(TAG, "ota_state_transition failed: %s", esp_err_to_name(state_err));
+    }
+
     int total = 0;
-    int received;
-    char buf[1024];
-    while ((received = httpd_req_recv(req, buf, sizeof(buf))) > 0) {
-        ESP_RETURN_ON_ERROR(esp_ota_write(handle, buf, received), TAG, "ota write");
+    int received = 0;
+    uint8_t buf[1024];
+    while ((received = httpd_req_recv(req, (char *)buf, sizeof(buf))) > 0) {
+        mbedtls_sha256_update(&sha_ctx, buf, received);
+        err = esp_ota_write(handle, buf, received);
+        if (err != ESP_OK) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Écriture OTA échouée");
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota write failed");
+            esp_ota_abort(handle);
+            mbedtls_sha256_free(&sha_ctx);
+            return ESP_ERR_HTTPD_RESP_SENT;
+        }
         total += received;
     }
     if (received < 0) {
-        esp_ota_end(handle);
-        return ESP_FAIL;
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Flux OTA interrompu");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota receive failed");
+        esp_ota_abort(handle);
+        mbedtls_sha256_free(&sha_ctx);
+        return ESP_ERR_HTTPD_RESP_SENT;
     }
-    ESP_RETURN_ON_ERROR(esp_ota_end(handle), TAG, "ota end");
-    ESP_RETURN_ON_ERROR(esp_ota_set_boot_partition(partition), TAG, "set boot");
-    httpd_resp_set_hdr(req, "X-OTA-Size", "0");
-    httpd_resp_sendstr(req, "{\"ok\":true}");
-    ESP_LOGI(TAG, "Controller OTA flashed %d bytes", total);
+
+    if (manifest.image_size != 0 && manifest.image_size != (uint32_t)total) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Taille inattendue");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "size mismatch");
+        esp_ota_abort(handle);
+        mbedtls_sha256_free(&sha_ctx);
+        return ESP_ERR_HTTPD_RESP_SENT;
+    }
+
+    uint8_t digest[32];
+    mbedtls_sha256_finish(&sha_ctx, digest);
+    mbedtls_sha256_free(&sha_ctx);
+    if (memcmp(digest, manifest.image_sha256, sizeof(digest)) != 0) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Hash SHA-256 invalide");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "sha256 mismatch");
+        esp_ota_abort(handle);
+        return ESP_ERR_HTTPD_RESP_SENT;
+    }
+
+    state_err = ota_state_transition(OTA_TARGET_CONTROLLER, OTA_STATE_VERIFYING, "Hash validé");
+    if (state_err != ESP_OK) {
+        ESP_LOGW(TAG, "ota_state_transition failed: %s", esp_err_to_name(state_err));
+    }
+
+    err = esp_ota_end(handle);
+    handle = 0;
+    if (err != ESP_OK) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "esp_ota_end échec");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota end failed");
+    }
+
+    esp_app_desc_t new_desc = {0};
+    ESP_RETURN_ON_ERROR(esp_ota_get_image_desc(partition, &new_desc), TAG, "desc nouvelle image");
+
+    if (strncmp(new_desc.version, manifest.version, sizeof(new_desc.version)) != 0) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Version manifest ≠ binaire");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "version mismatch");
+    }
+
+    if (ota_manifest_compare_versions(running_desc.version, new_desc.version) >= 0) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Version non monotone (binaire)");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "image version not newer");
+    }
+
+    state_err = ota_state_transition(OTA_TARGET_CONTROLLER, OTA_STATE_READY, "Basculement préparé");
+    if (state_err != ESP_OK) {
+        ESP_LOGW(TAG, "ota_state_transition failed: %s", esp_err_to_name(state_err));
+    }
+
+    err = esp_ota_set_boot_partition(partition);
+    if (err != ESP_OK) {
+        ota_state_fail(OTA_TARGET_CONTROLLER, "Sélection partition échouée");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "set boot failed");
+    }
+
+    state_err = ota_state_transition(OTA_TARGET_CONTROLLER, OTA_STATE_PENDING_REBOOT, "Redémarrage imminent");
+    if (state_err != ESP_OK) {
+        ESP_LOGW(TAG, "ota_state_transition failed: %s", esp_err_to_name(state_err));
+    }
+
+    char size_buf[16];
+    snprintf(size_buf, sizeof(size_buf), "%d", total);
+    httpd_resp_set_hdr(req, "X-OTA-Size", size_buf);
+
+    char sha_hex[65];
+    ota_manifest_sha256_to_hex(digest, sha_hex);
+
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddNumberToObject(resp, "bytes", total);
+    cJSON_AddStringToObject(resp, "version", new_desc.version);
+    cJSON_AddStringToObject(resp, "sha256", sha_hex);
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    if (!json) {
+        return ESP_ERR_NO_MEM;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+
+    ESP_LOGI(TAG, "Controller OTA flashed %d bytes (v%s)", total, new_desc.version);
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
     return ESP_OK;
@@ -787,27 +1012,125 @@ static esp_err_t dome_ota_chunk_cb(const uint8_t *chunk, size_t len, void *ctx)
 static esp_err_t handle_ota_dome(httpd_req_t *req)
 {
     REQUIRE_AUTH_OR_RETURN(req);
+    ota_manifest_t manifest = {0};
+    esp_err_t err = read_manifest_header(req, &manifest);
+    if (err != ESP_OK) {
+        ota_state_fail(OTA_TARGET_DOME, "Manifest invalide");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid manifest");
+    }
+    if (!ota_manifest_is_target(&manifest, OTA_TARGET_DOME)) {
+        ota_state_fail(OTA_TARGET_DOME, "Cible manifest erronée");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "manifest target mismatch");
+    }
+
+    esp_err_t state_err = ota_state_begin(OTA_TARGET_DOME, &manifest, "Manifest validé");
+    if (state_err != ESP_OK) {
+        ESP_LOGW(TAG, "ota_state_begin(dome) failed: %s", esp_err_to_name(state_err));
+    }
+
+    err = dome_stage_manifest(&manifest, "Préparation OTA");
+    if (err != ESP_OK) {
+        ota_state_fail(OTA_TARGET_DOME, "Chargement métadonnées échec");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "dome meta failed");
+    }
+
+    state_err = ota_state_transition(OTA_TARGET_DOME, OTA_STATE_DOWNLOADING, "Réception en cours");
+    if (state_err != ESP_OK) {
+        ESP_LOGW(TAG, "ota_state_transition dome failed: %s", esp_err_to_name(state_err));
+    }
+
     uint8_t cmd = DOME_OTA_CMD_BEGIN;
     ESP_RETURN_ON_ERROR(dome_bus_write(DOME_REG_OTA_CMD, &cmd, 1), TAG, "dome ota begin");
+
+    mbedtls_sha256_context sha_ctx;
+    mbedtls_sha256_init(&sha_ctx);
+    mbedtls_sha256_starts(&sha_ctx, 0);
+
     int received;
     uint8_t buf[256];
+    int total = 0;
     while ((received = httpd_req_recv(req, (char *)buf, sizeof(buf))) > 0) {
-        esp_err_t err = ota_stream_chunks(buf, received, DOME_REG_BLOCK_OTA_DATA_LEN, dome_ota_chunk_cb, NULL);
+        mbedtls_sha256_update(&sha_ctx, buf, received);
+        err = ota_stream_chunks(buf, received, DOME_REG_BLOCK_OTA_DATA_LEN, dome_ota_chunk_cb, NULL);
         if (err != ESP_OK) {
             uint8_t abort_cmd = DOME_OTA_CMD_ABORT;
             dome_bus_write(DOME_REG_OTA_CMD, &abort_cmd, 1);
-            return err;
+            ota_state_fail(OTA_TARGET_DOME, "Écriture I2C échouée");
+            mbedtls_sha256_free(&sha_ctx);
+            return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota stream failed");
         }
+        total += received;
     }
     if (received < 0) {
         uint8_t abort_cmd = DOME_OTA_CMD_ABORT;
         dome_bus_write(DOME_REG_OTA_CMD, &abort_cmd, 1);
-        return ESP_FAIL;
+        ota_state_fail(OTA_TARGET_DOME, "Flux OTA interrompu");
+        mbedtls_sha256_free(&sha_ctx);
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota receive failed");
     }
+
+    if (manifest.image_size != 0 && manifest.image_size != (uint32_t)total) {
+        uint8_t abort_cmd = DOME_OTA_CMD_ABORT;
+        dome_bus_write(DOME_REG_OTA_CMD, &abort_cmd, 1);
+        ota_state_fail(OTA_TARGET_DOME, "Taille inattendue");
+        mbedtls_sha256_free(&sha_ctx);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "size mismatch");
+    }
+
+    uint8_t digest[32];
+    mbedtls_sha256_finish(&sha_ctx, digest);
+    mbedtls_sha256_free(&sha_ctx);
+    if (memcmp(digest, manifest.image_sha256, sizeof(digest)) != 0) {
+        uint8_t abort_cmd = DOME_OTA_CMD_ABORT;
+        dome_bus_write(DOME_REG_OTA_CMD, &abort_cmd, 1);
+        ota_state_fail(OTA_TARGET_DOME, "Hash SHA-256 invalide");
+        dome_write_status_message("Hash invalide");
+        uint8_t flags = DOME_OTA_FLAG_META_READY | DOME_OTA_FLAG_HASH_FAIL;
+        dome_bus_write(DOME_REG_OTA_FLAGS, &flags, 1);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "sha256 mismatch");
+    }
+
+    uint8_t flags = DOME_OTA_FLAG_META_READY | DOME_OTA_FLAG_HASH_OK;
+    dome_bus_write(DOME_REG_OTA_FLAGS, &flags, 1);
+    dome_write_status_message("Hash validé");
+
+    state_err = ota_state_transition(OTA_TARGET_DOME, OTA_STATE_VERIFYING, "Hash validé");
+    if (state_err != ESP_OK) {
+        ESP_LOGW(TAG, "ota_state_transition dome verify failed: %s", esp_err_to_name(state_err));
+    }
+
     uint8_t commit = DOME_OTA_CMD_COMMIT;
     ESP_RETURN_ON_ERROR(dome_bus_write(DOME_REG_OTA_CMD, &commit, 1), TAG, "ota commit");
-    httpd_resp_set_hdr(req, "X-OTA-Size", "0");
-    return httpd_resp_sendstr(req, "{\"ok\":true}");
+
+    state_err = ota_state_transition(OTA_TARGET_DOME, OTA_STATE_PENDING_REBOOT, "Commit envoyé");
+    if (state_err != ESP_OK) {
+        ESP_LOGW(TAG, "ota_state_transition dome pending failed: %s", esp_err_to_name(state_err));
+    }
+
+    char size_buf[16];
+    snprintf(size_buf, sizeof(size_buf), "%d", total);
+    httpd_resp_set_hdr(req, "X-OTA-Size", size_buf);
+
+    char sha_hex[65];
+    ota_manifest_sha256_to_hex(digest, sha_hex);
+
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddNumberToObject(resp, "bytes", total);
+    cJSON_AddStringToObject(resp, "sha256", sha_hex);
+    cJSON_AddStringToObject(resp, "version", manifest.version);
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    if (!json) {
+        return ESP_ERR_NO_MEM;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
 }
 
 void httpd_start_secure(void)
