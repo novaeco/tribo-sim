@@ -122,6 +122,12 @@ typedef void (*network_status_cb_t)(const terrarium_status_t *status, void *ctx)
 typedef void (*network_error_cb_t)(esp_err_t err, const char *message, void *ctx);
 typedef void (*network_species_cb_t)(const terrarium_species_catalog_t *catalog, void *ctx);
 
+typedef struct {
+    bool available;
+    bool custom;
+    size_t length;
+} network_root_ca_status_t;
+
 esp_err_t network_manager_init(const app_config_t *config);
 esp_err_t network_manager_start(const app_config_t *config);
 esp_err_t network_manager_stop(void);
@@ -138,6 +144,11 @@ esp_err_t network_manager_request_species_catalog(void);
 esp_err_t network_manager_apply_species(const char *key);
 esp_err_t network_manager_upload_controller_ota(const char *path);
 esp_err_t network_manager_upload_dome_ota(const char *path);
+
+esp_err_t network_manager_import_root_ca_from_file(const char *path);
+esp_err_t network_manager_import_root_ca_from_buffer(const uint8_t *data, size_t len);
+esp_err_t network_manager_auto_provision_root_ca(void);
+void      network_manager_get_root_ca_status(network_root_ca_status_t *status);
 
 const terrarium_status_t *network_manager_get_cached_status(void);
 const terrarium_species_catalog_t *network_manager_get_cached_species(void);

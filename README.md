@@ -21,6 +21,17 @@
 
 ---
 
+## Flux d’appairage panel ↔ contrôleur
+
+1. **Mode AP contrôleur** : au démarrage, le contrôleur publie `http://192.168.4.1/api/security/root_ca` (HTTP restreint à l’AP) qui renvoie le certificat racine PEM auto-signé.
+2. **Provisionnement automatique** : l’onglet *Paramètres → Certificats TLS* du panel propose un switch « Provision automatique ». Lorsqu’il est actif, la première connexion télécharge ce certificat, le valide et le stocke dans le NVS **chiffré** (`nvs_keys` + `nvs`).
+3. **Import manuel** : depuis la même carte UI, un chemin PEM (`/spiffs/...`) peut être saisi pour charger un certificat personnalisé (sécurisé dans la même partition NVS chiffrée).
+4. **Validation stricte** : toute requête HTTPS vers le contrôleur applique désormais la vérification **CN/subjectAltName** via `esp_http_client`, garantissant que le certificat présenté matche `controller_host` (IP ou FQDN).
+
+En cas d’échec (route indisponible, fichier invalide), une bannière d’erreur s’affiche, et le panneau conserve l’ancien certificat tant qu’un import valide n’a pas été effectué.
+
+---
+
 ## Préparation de l’environnement de développement
 
 1. **Système** : Python ≥ 3.10, Git, CMake ≥ 3.24, Ninja, toolchains `xtensa-esp32s3-elf` (installées via l’ESP-IDF). Installer les drivers USB-JTAG (CP210x, FTDI ou CH9102) adaptés à votre OS.

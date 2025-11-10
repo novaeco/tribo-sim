@@ -78,6 +78,9 @@ typedef struct {
     lv_obj_t *ta_host;
     lv_obj_t *spin_port;
     lv_obj_t *sw_tls;
+    lv_obj_t *ta_cert_path;
+    lv_obj_t *label_cert_status;
+    lv_obj_t *sw_cert_auto;
     lv_obj_t *chart;
     lv_chart_series_t *chart_temp;
     lv_chart_series_t *chart_hum;
@@ -94,7 +97,7 @@ typedef struct {
     size_t species_option_count;
     bool alarm_muted;
     bool updating_controls;
-    localized_label_t localized_labels[64];
+    localized_label_t localized_labels[80];
     size_t localized_label_count;
     uint16_t tab_dashboard_idx;
     uint16_t tab_control_idx;
@@ -127,6 +130,8 @@ static void ota_upload_event_cb(lv_event_t *e);
 static void calibration_fetch_event_cb(lv_event_t *e);
 static void calibration_apply_event_cb(lv_event_t *e);
 static void settings_save_event_cb(lv_event_t *e);
+static void cert_import_event_cb(lv_event_t *e);
+static void cert_provision_event_cb(lv_event_t *e);
 
 static void network_status_cb(const terrarium_status_t *status, void *ctx);
 static void network_error_cb(esp_err_t err, const char *message, void *ctx);
@@ -142,6 +147,7 @@ static void notify_error(ui_string_id_t prefix_id, esp_err_t err);
 static void send_light_command(void);
 static void update_alarm_button(void);
 static void populate_settings_form(void);
+static void update_certificate_status_label(void);
 static void store_history_sample(float temp, float hum, float uvi);
 static void refresh_chart(void);
 static void apply_species_to_dropdown(void);
@@ -446,9 +452,45 @@ esp_err_t ui_init(app_config_t *config)
     lv_obj_add_event_cb(btn_save, settings_save_event_cb, LV_EVENT_CLICKED, NULL);
     register_localized_label(lv_label_create(btn_save), UI_STR_NETWORK_SAVE);
 
+    lv_obj_t *cert_card = lv_obj_create(tab_settings);
+    lv_obj_set_size(cert_card, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(cert_card, 12, 0);
+    lv_obj_set_style_radius(cert_card, 12, 0);
+    lv_obj_set_style_bg_opa(cert_card, LV_OPA_20, 0);
+    lv_obj_set_flex_flow(cert_card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(cert_card, 8, 0);
+    register_localized_label(lv_label_create(cert_card), UI_STR_CERT_SECTION);
+
+    s_ctx.label_cert_status = lv_label_create(cert_card);
+    lv_label_set_long_mode(s_ctx.label_cert_status, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(s_ctx.label_cert_status, "");
+
+    create_switch_row(cert_card, UI_STR_CERT_AUTO_SWITCH, &s_ctx.sw_cert_auto);
+
+    register_localized_label(lv_label_create(cert_card), UI_STR_CERT_PATH);
+    s_ctx.ta_cert_path = lv_textarea_create(cert_card);
+    lv_textarea_set_one_line(s_ctx.ta_cert_path, true);
+    lv_textarea_set_placeholder_text(s_ctx.ta_cert_path, "/spiffs/root_ca.pem");
+
+    lv_obj_t *cert_btn_row = lv_obj_create(cert_card);
+    lv_obj_set_style_bg_opa(cert_btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(cert_btn_row, 0, 0);
+    lv_obj_set_flex_flow(cert_btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(cert_btn_row, 12, 0);
+
+    lv_obj_t *btn_cert_import = lv_btn_create(cert_btn_row);
+    lv_obj_add_event_cb(btn_cert_import, cert_import_event_cb, LV_EVENT_CLICKED, NULL);
+    register_localized_label(lv_label_create(btn_cert_import), UI_STR_CERT_IMPORT);
+
+    lv_obj_t *btn_cert_provision = lv_btn_create(cert_btn_row);
+    lv_obj_add_event_cb(btn_cert_provision, cert_provision_event_cb, LV_EVENT_CLICKED, NULL);
+    register_localized_label(lv_label_create(btn_cert_provision), UI_STR_CERT_PROVISION);
+
     populate_settings_form();
     update_all_localized_labels();
     update_tab_titles();
+
+    update_certificate_status_label();
 
     lvgl_port_unlock();
 
@@ -701,6 +743,43 @@ static void calibration_apply_event_cb(lv_event_t *e)
     }
 }
 
+static void cert_import_event_cb(lv_event_t *e)
+{
+    (void)e;
+    const char *path = s_ctx.ta_cert_path ? lv_textarea_get_text(s_ctx.ta_cert_path) : NULL;
+    if (!path || path[0] == '\0') {
+        set_status_banner(ui_loc_get(s_ctx.language, UI_STR_CERT_NO_PATH), true);
+        return;
+    }
+    esp_err_t err = network_manager_import_root_ca_from_file(path);
+    if (err != ESP_OK) {
+        notify_error(UI_STR_ERROR_CERT, err);
+        return;
+    }
+    update_certificate_status_label();
+    set_status_banner(ui_loc_get(s_ctx.language, UI_STR_CERT_IMPORTED), false);
+    esp_err_t net_err = network_manager_init(s_ctx.config);
+    if (net_err != ESP_OK) {
+        notify_error(UI_STR_ERROR_NETWORK, net_err);
+    }
+}
+
+static void cert_provision_event_cb(lv_event_t *e)
+{
+    (void)e;
+    esp_err_t err = network_manager_auto_provision_root_ca();
+    if (err != ESP_OK) {
+        notify_error(UI_STR_ERROR_CERT, err);
+        return;
+    }
+    update_certificate_status_label();
+    set_status_banner(ui_loc_get(s_ctx.language, UI_STR_CERT_IMPORTED), false);
+    esp_err_t net_err = network_manager_init(s_ctx.config);
+    if (net_err != ESP_OK) {
+        notify_error(UI_STR_ERROR_NETWORK, net_err);
+    }
+}
+
 static void settings_save_event_cb(lv_event_t *e)
 {
     (void)e;
@@ -709,6 +788,7 @@ static void settings_save_event_cb(lv_event_t *e)
     strlcpy(s_ctx.config->controller_host, lv_textarea_get_text(s_ctx.ta_host), sizeof(s_ctx.config->controller_host));
     s_ctx.config->controller_port = lv_spinbox_get_value(s_ctx.spin_port);
     s_ctx.config->use_tls = lv_obj_has_state(s_ctx.sw_tls, LV_STATE_CHECKED);
+    s_ctx.config->auto_provision_root_ca = s_ctx.sw_cert_auto && lv_obj_has_state(s_ctx.sw_cert_auto, LV_STATE_CHECKED);
     esp_err_t err = app_config_save(s_ctx.config);
     if (err != ESP_OK) {
         notify_error(UI_STR_ERROR_CONFIG, err);
@@ -965,6 +1045,28 @@ static void update_alarm_button(void)
     }
 }
 
+static void update_certificate_status_label(void)
+{
+    if (!s_ctx.label_cert_status) {
+        return;
+    }
+    network_root_ca_status_t status = {0};
+    network_manager_get_root_ca_status(&status);
+    if (!status.available) {
+        lv_label_set_text(s_ctx.label_cert_status, ui_loc_get(s_ctx.language, UI_STR_CERT_STATUS_MISSING));
+        return;
+    }
+    if (status.custom) {
+        lv_label_set_text_fmt(s_ctx.label_cert_status,
+                              ui_loc_get(s_ctx.language, UI_STR_CERT_STATUS_CUSTOM),
+                              (unsigned int)status.length);
+    } else {
+        lv_label_set_text_fmt(s_ctx.label_cert_status,
+                              ui_loc_get(s_ctx.language, UI_STR_CERT_STATUS_DEFAULT),
+                              (unsigned int)status.length);
+    }
+}
+
 static void populate_settings_form(void)
 {
     lv_textarea_set_text(s_ctx.ta_ssid, s_ctx.config->ssid);
@@ -977,6 +1079,14 @@ static void populate_settings_form(void)
         lv_obj_clear_state(s_ctx.sw_tls, LV_STATE_CHECKED);
     }
     lv_dropdown_set_selected(s_ctx.dropdown_language, ui_loc_language_index(s_ctx.language));
+    if (s_ctx.sw_cert_auto) {
+        if (s_ctx.config->auto_provision_root_ca) {
+            lv_obj_add_state(s_ctx.sw_cert_auto, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(s_ctx.sw_cert_auto, LV_STATE_CHECKED);
+        }
+    }
+    update_certificate_status_label();
 }
 
 static void store_history_sample(float temp, float hum, float uvi)

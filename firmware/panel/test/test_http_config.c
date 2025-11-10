@@ -18,6 +18,9 @@ TEST_CASE("HTTP config enables TLS root CA when requested", "[network]")
     TEST_ASSERT_EQUAL_UINT16(443, http_cfg.port);
     TEST_ASSERT_EQUAL(HTTP_TRANSPORT_OVER_SSL, http_cfg.transport_type);
     TEST_ASSERT_NOT_NULL(http_cfg.cert_pem);
+    TEST_ASSERT_NOT_NULL(http_cfg.common_name);
+    TEST_ASSERT_EQUAL_STRING("example.com", http_cfg.common_name);
+    TEST_ASSERT_FALSE(http_cfg.skip_cert_common_name_check);
 }
 
 TEST_CASE("HTTP config disables TLS when not requested", "[network]")
@@ -33,5 +36,6 @@ TEST_CASE("HTTP config disables TLS when not requested", "[network]")
 
     TEST_ASSERT_EQUAL(HTTP_TRANSPORT_OVER_TCP, http_cfg.transport_type);
     TEST_ASSERT_NULL(http_cfg.cert_pem);
+    TEST_ASSERT_NULL(http_cfg.common_name);
 }
 

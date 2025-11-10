@@ -46,5 +46,12 @@ Les valeurs par défaut (modifiable dans `app_config.h`) :
 - SSID : `terrarium-s3`
 - Mot de passe : `terrarium123`
 - Hôte contrôleur : `192.168.4.1`
-- Port : `80`
+- Port : `443`
+
+## Appairage & certificats TLS
+
+- Le contrôleur expose son certificat racine (PEM) sur `http://192.168.4.1/api/security/root_ca` lorsqu’il tourne en mode AP.
+- Au premier appairage, le panel peut activer le **provisionnement automatique** (onglet *Paramètres → Certificats TLS*) : le certificat est téléchargé via cette route, validé, puis stocké dans une partition **NVS chiffrée** (`nvs_keys` + `nvs`).
+- Le certificat peut aussi être importé manuellement depuis un fichier PEM (`/spiffs/...`). L’UI propose un champ chemin + bouton *Importer certificat*.
+- Une fois chargé, le client HTTP applique la validation **CN/subjectAltName** du contrôleur. Le statut du certificat (interne vs personnalisé) est visible dans la carte *Certificats TLS*.
 

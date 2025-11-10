@@ -4,7 +4,7 @@
 #include <string.h>
 
 #include "esp_http_client.h"
-#include "root_ca.h"
+#include "controller_cert_store.h"
 
 esp_err_t network_http_event_handler_cb(esp_http_client_event_t *evt)
 {
@@ -66,7 +66,9 @@ void network_manager_prepare_http_client_config(const app_config_t *cfg,
     out->method = method;
     out->transport_type = cfg->use_tls ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
     if (cfg->use_tls) {
-        out->cert_pem = PANEL_CONTROLLER_ROOT_CA_PEM;
+        out->cert_pem = controller_cert_store_get();
+        out->common_name = cfg->controller_host;
+        out->skip_cert_common_name_check = false;
     }
 }
 
