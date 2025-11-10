@@ -329,7 +329,24 @@ Retourne un JSON agrégé **capteurs + dôme** :
 
 ## Licence
 
-À définir par le porteur du projet (MIT/BSD/GPL… selon préférence).
+Le dépôt (firmwares ESP32, bibliothèques communes, documentation, gabarits de tests et artefacts générés par la CI) est distribué sous licence [MIT](LICENSE). Ce choix garantit la compatibilité avec des déploiements matériels/commerciaux tout en laissant une totale liberté de modification, d’intégration et de redistribution (y compris firmware préflashé, binaires OTA et documentations imprimées).
+
+### Obligations clés
+
+- **Conserver la notice** : toute redistribution (code source, binaire, documentation) doit garder le copyright `© 2024‑2025 NovaEco` et le texte de la licence MIT.
+- **Inclure le disclaimer** : l’exonération de garantie/d’indemnisation de la licence MIT doit rester jointe aux lots matériels expédiés (manuel, lien vers la documentation, QR code, etc.).
+- **Séparer les obligations réglementaires** : la licence couvre uniquement la propriété intellectuelle. Les exigences EN/IEC 62471, CEM, LVD, RGPD, CITES ou locales restent sous la responsabilité de l’intégrateur.
+
+### Composants tiers
+
+- **Monocypher (cryptographie)** — inclus via `firmware/common/monocypher.*`, licence [CC0 1.0](https://monocypher.org/). Respecter la renonciation CC0 ou, si requis par votre conformité interne, créditer "Monocypher — Loup Vaillant".
+- Tout composant supplémentaire ajouté doit être accompagné de sa licence dans `third_party/` ou une notice équivalente.
+
+### Contributions & notification des auteurs
+
+- Toutes les contributions passées (commits NovaEco ≤ v0.4.0) sont explicitement **republiées sous MIT**. Aucune contribution externe antérieure n’est recensée ; si vous avez fourni du code avant cette mise à jour, merci de confirmer l’acceptation MIT via un commentaire signé (`Signed-off-by`).
+- Les contributions futures doivent respecter le [DCO 1.1](https://developercertificate.org/) : ajoutez `Signed-off-by: Nom <email>` à chaque commit ou utilisez `git commit -s`.
+- Un modèle de notification/issue pour informer les contributeurs d’un changement de licence est fourni dans `docs/licensing.md`. Utilisez-le si d’autres contributeurs apparaissent dans l’historique.
 
 ---
 

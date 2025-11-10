@@ -2,6 +2,8 @@
 
 Cette procédure valide l'endurance électrique, thermique et logicielle des ensembles contrôleur/dôme/panel avant expédition.
 
+> **Licence :** MIT — voir [`LICENSE`](../LICENSE). Toute copie ou redistribution de cette procédure doit conserver cet encart ainsi que le disclaimer de non-garantie.
+
 ## 1. Préparation & instrumentation
 - **Locaux** : enceinte ventilée fermée, capteurs UV homologués (IEC/EN 62471), thermocouples type K.
 - **Alimentation** : source 24 V/10 A limitée en courant, alimentation USB-C 5 V isolée.

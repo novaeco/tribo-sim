@@ -2,6 +2,7 @@
 
 - Framework: ESP-IDF via PlatformIO
 - MCU: ESP32-S3-WROOM-2-N32R16V
+- Licence: MIT — voir [`LICENSE`](../../LICENSE). Inclure la notice MIT et le disclaimer lors de toute redistribution du firmware (sources ou binaires OTA).
 - Features in this baseline:
   - I2C master init, optional TCA9548A channel select
   - DS3231 time read (if connected)
