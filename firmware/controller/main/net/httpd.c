@@ -28,6 +28,7 @@
 #include "include/config.h"
 #include "include/dome_regs.h"
 #include "net/credentials.h"
+#include "net/light_payload.h"
 #include "species_profiles.h"
 #include "ota_stream.h"
 #include "ota_manifest.h"
@@ -539,29 +540,39 @@ static esp_err_t api_light_post(httpd_req_t *req)
     if (!root) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json");
     }
-    cJSON *cct = cJSON_GetObjectItem(root, "cct");
-    cJSON *uva = cJSON_GetObjectItem(root, "uva");
-    cJSON *uvb = cJSON_GetObjectItem(root, "uvb");
-    cJSON *sky = cJSON_GetObjectItem(root, "sky");
-    if (!cct || !uva || !uvb) {
+    light_payload_t payload = {0};
+    char err_field[32] = {0};
+    char err_detail[32] = {0};
+    esp_err_t parse_err = light_payload_parse(root, &payload, err_field, sizeof(err_field), err_detail, sizeof(err_detail));
+    if (parse_err != ESP_OK) {
+        char msg[96];
+        if (err_field[0] != '\0') {
+            if (err_detail[0] != '\0') {
+                snprintf(msg, sizeof(msg), "%s %s", err_detail, err_field);
+            } else {
+                snprintf(msg, sizeof(msg), "invalid field %s", err_field);
+            }
+        } else {
+            snprintf(msg, sizeof(msg), "%s", "invalid payload");
+        }
         cJSON_Delete(root);
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing fields");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, msg);
     }
 
     uint8_t cct_buf[4];
-    wr16_le(&cct_buf[0], (uint16_t)cJSON_GetObjectItem(cct, "day")->valueint);
-    wr16_le(&cct_buf[2], (uint16_t)cJSON_GetObjectItem(cct, "warm")->valueint);
+    wr16_le(&cct_buf[0], payload.cct_day);
+    wr16_le(&cct_buf[2], payload.cct_warm);
     ESP_ERROR_CHECK_WITHOUT_ABORT(dome_bus_write(DOME_REG_BLOCK_CCT, cct_buf, sizeof(cct_buf)));
 
     uint8_t uva_buf[4];
-    wr16_le(&uva_buf[0], (uint16_t)cJSON_GetObjectItem(uva, "set")->valueint);
-    wr16_le(&uva_buf[2], (uint16_t)cJSON_GetObjectItem(uva, "clamp")->valueint);
+    wr16_le(&uva_buf[0], payload.uva_set);
+    wr16_le(&uva_buf[2], payload.uva_clamp);
     ESP_ERROR_CHECK_WITHOUT_ABORT(dome_bus_write(DOME_REG_BLOCK_UVA, uva_buf, sizeof(uva_buf)));
 
-    float uvb_set = cJSON_GetObjectItem(uvb, "set")->valuedouble;
-    float uvb_clamp = cJSON_GetObjectItem(uvb, "clamp")->valuedouble;
-    float period = cJSON_GetObjectItem(uvb, "period_s")->valuedouble;
-    float duty_req = cJSON_GetObjectItem(uvb, "duty_pm")->valuedouble;
+    float uvb_set = payload.uvb_set;
+    float uvb_clamp = payload.uvb_clamp;
+    float period = (float)payload.uvb_period;
+    float duty_req = payload.uvb_duty;
     float k = 0.0f, uvi_max = 0.0f;
     calib_get_uvb(&k, &uvi_max);
     if (k > 0 && uvi_max > 0) {
@@ -579,8 +590,8 @@ static esp_err_t api_light_post(httpd_req_t *req)
     uvb_buf[2] = reg_from_permille(uvb_clamp);
     ESP_ERROR_CHECK_WITHOUT_ABORT(dome_bus_write(DOME_REG_BLOCK_UVB, uvb_buf, sizeof(uvb_buf)));
 
-    if (sky) {
-        uint8_t sky_val = (uint8_t)sky->valueint;
+    if (payload.has_sky) {
+        uint8_t sky_val = payload.sky_value;
         ESP_ERROR_CHECK_WITHOUT_ABORT(dome_bus_write(DOME_REG_SKY_CFG, &sky_val, 1));
     }
 

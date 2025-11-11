@@ -18,6 +18,7 @@ idf_component_register(
          "drivers/alarms.c"
          "net/wifi.c"
          "net/httpd.c"
+         "net/light_payload.c"
          "net/credentials.c"
          "net/ota_stream.c"
          "net/ota_manifest.c"
