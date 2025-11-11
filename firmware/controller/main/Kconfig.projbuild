@@ -1,0 +1,13 @@
+menu "Dome bus configuration"
+
+config DOME_BUS_MUTEX_TIMEOUT_MS
+    int "Dome bus mutex timeout (ms)"
+    range 0 10000
+    default 50
+    help
+        Timeout in milliseconds for dome bus mutex acquisition. When set to 0 the
+        lock will wait indefinitely. A non-zero value causes dome_bus_lock() and
+        the read/write helpers to return ESP_ERR_TIMEOUT if the mutex cannot be
+        taken within the configured interval.
+
+endmenu

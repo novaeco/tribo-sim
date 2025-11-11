@@ -5,6 +5,7 @@
 #include "sht21.h"
 #include "bme280.h"
 #include "tca9548a.h"
+#include "drivers/dome_bus.h"
 #include "driver/i2c.h"
 #include "freertos/FreeRTOS.h"
 #include "esp_log.h"
@@ -225,7 +226,11 @@ void sensors_init(void)
     memset(&s_state, 0, sizeof(s_state));
     configure_default_filter();
 #if TCA_PRESENT
-    esp_err_t err = tca9548a_select(I2C_NUM_0, TCA_ADDR, TCA_CH_SENSORS);
+    esp_err_t err = dome_bus_lock();
+    if (err == ESP_OK) {
+        err = tca9548a_select(I2C_NUM_0, TCA_ADDR, TCA_CH_SENSORS);
+        dome_bus_unlock();
+    }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "TCA9548A select failed during init: %s", esp_err_to_name(err));
     }
@@ -342,9 +347,6 @@ uint32_t sensors_read(terra_sensors_t* out)
         sensors_init();
     }
     memset(out, 0, sizeof(*out));
-#if TCA_PRESENT
-    tca9548a_select(I2C_NUM_0, TCA_ADDR, TCA_CH_SENSORS);
-#endif
     uint32_t faults = 0;
     float sample = NAN;
     esp_err_t err = ESP_OK;
@@ -378,52 +380,97 @@ uint32_t sensors_read(terra_sensors_t* out)
     }
 
     float t = NAN, rh = NAN;
-    if (s_state.sht31_configured || s_state.status[TERRA_SENSOR_SHT31].present) {
-        err = sht31_read(I2C_NUM_0, 0x44, &t, &rh);
-        if (err == ESP_OK && isfinite(t) && isfinite(rh)) {
-            out->sht31_present = true;
-            out->sht31_t_c = t;
-            out->sht31_rh = rh;
-            update_status(TERRA_SENSOR_SHT31, true, false, ESP_OK);
+    bool lock_taken = false;
+    bool bus_selected = false;
+    esp_err_t bus_err = ESP_OK;
+#if TCA_PRESENT
+    bus_err = dome_bus_lock();
+    if (bus_err == ESP_OK) {
+        lock_taken = true;
+        bus_err = tca9548a_select(I2C_NUM_0, TCA_ADDR, TCA_CH_SENSORS);
+        if (bus_err == ESP_OK) {
+            bus_selected = true;
+        }
+    }
+#else
+    bus_selected = true;
+#endif
+
+    if (bus_selected) {
+        if (s_state.sht31_configured || s_state.status[TERRA_SENSOR_SHT31].present) {
+            err = sht31_read(I2C_NUM_0, 0x44, &t, &rh);
+            if (err == ESP_OK && isfinite(t) && isfinite(rh)) {
+                out->sht31_present = true;
+                out->sht31_t_c = t;
+                out->sht31_rh = rh;
+                update_status(TERRA_SENSOR_SHT31, true, false, ESP_OK);
+            } else {
+                faults |= TERRA_SENSOR_FAULT_SHT31;
+                update_status(TERRA_SENSOR_SHT31, s_state.status[TERRA_SENSOR_SHT31].present, true, err);
+            }
         } else {
             faults |= TERRA_SENSOR_FAULT_SHT31;
-            update_status(TERRA_SENSOR_SHT31, s_state.status[TERRA_SENSOR_SHT31].present, true, err);
         }
-    } else {
-        faults |= TERRA_SENSOR_FAULT_SHT31;
-    }
 
-    if (s_state.sht21_configured || s_state.status[TERRA_SENSOR_SHT21].present) {
-        err = sht21_read(I2C_NUM_0, 0x40, &t, &rh);
-        if (err == ESP_OK && isfinite(t) && isfinite(rh)) {
-            out->sht21_present = true;
-            out->sht21_t_c = t;
-            out->sht21_rh = rh;
-            update_status(TERRA_SENSOR_SHT21, true, false, ESP_OK);
+        if (s_state.sht21_configured || s_state.status[TERRA_SENSOR_SHT21].present) {
+            err = sht21_read(I2C_NUM_0, 0x40, &t, &rh);
+            if (err == ESP_OK && isfinite(t) && isfinite(rh)) {
+                out->sht21_present = true;
+                out->sht21_t_c = t;
+                out->sht21_rh = rh;
+                update_status(TERRA_SENSOR_SHT21, true, false, ESP_OK);
+            } else {
+                faults |= TERRA_SENSOR_FAULT_SHT21;
+                update_status(TERRA_SENSOR_SHT21, s_state.status[TERRA_SENSOR_SHT21].present, true, err);
+            }
         } else {
             faults |= TERRA_SENSOR_FAULT_SHT21;
-            update_status(TERRA_SENSOR_SHT21, s_state.status[TERRA_SENSOR_SHT21].present, true, err);
         }
-    } else {
-        faults |= TERRA_SENSOR_FAULT_SHT21;
-    }
 
-    bme280_data_t bd = {0};
-    if (s_state.bme_configured || s_state.status[TERRA_SENSOR_BME280].present) {
-        err = bme280_read(I2C_NUM_0, 0x76, &bd);
-        if (err == ESP_OK && isfinite(bd.t_c) && isfinite(bd.rh) && isfinite(bd.p_hpa)) {
-            out->bme_present = true;
-            out->bme_t_c = bd.t_c;
-            out->bme_rh = bd.rh;
-            out->bme_p_hpa = bd.p_hpa;
-            update_status(TERRA_SENSOR_BME280, true, false, ESP_OK);
+        bme280_data_t bd = {0};
+        if (s_state.bme_configured || s_state.status[TERRA_SENSOR_BME280].present) {
+            err = bme280_read(I2C_NUM_0, 0x76, &bd);
+            if (err == ESP_OK && isfinite(bd.t_c) && isfinite(bd.rh) && isfinite(bd.p_hpa)) {
+                out->bme_present = true;
+                out->bme_t_c = bd.t_c;
+                out->bme_rh = bd.rh;
+                out->bme_p_hpa = bd.p_hpa;
+                update_status(TERRA_SENSOR_BME280, true, false, ESP_OK);
+            } else {
+                faults |= TERRA_SENSOR_FAULT_BME;
+                update_status(TERRA_SENSOR_BME280, s_state.status[TERRA_SENSOR_BME280].present, true, err);
+            }
         } else {
             faults |= TERRA_SENSOR_FAULT_BME;
-            update_status(TERRA_SENSOR_BME280, s_state.status[TERRA_SENSOR_BME280].present, true, err);
         }
     } else {
-        faults |= TERRA_SENSOR_FAULT_BME;
+        if (s_state.sht31_configured || s_state.status[TERRA_SENSOR_SHT31].present) {
+            faults |= TERRA_SENSOR_FAULT_SHT31;
+            update_status(TERRA_SENSOR_SHT31, s_state.status[TERRA_SENSOR_SHT31].present, true, bus_err);
+        } else {
+            faults |= TERRA_SENSOR_FAULT_SHT31;
+        }
+
+        if (s_state.sht21_configured || s_state.status[TERRA_SENSOR_SHT21].present) {
+            faults |= TERRA_SENSOR_FAULT_SHT21;
+            update_status(TERRA_SENSOR_SHT21, s_state.status[TERRA_SENSOR_SHT21].present, true, bus_err);
+        } else {
+            faults |= TERRA_SENSOR_FAULT_SHT21;
+        }
+
+        if (s_state.bme_configured || s_state.status[TERRA_SENSOR_BME280].present) {
+            faults |= TERRA_SENSOR_FAULT_BME;
+            update_status(TERRA_SENSOR_BME280, s_state.status[TERRA_SENSOR_BME280].present, true, bus_err);
+        } else {
+            faults |= TERRA_SENSOR_FAULT_BME;
+        }
     }
+
+#if TCA_PRESENT
+    if (lock_taken) {
+        dome_bus_unlock();
+    }
+#endif
 
     float primary_temp = NAN;
     bool temp_valid = false;
