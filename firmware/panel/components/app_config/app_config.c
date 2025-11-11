@@ -7,6 +7,36 @@
 
 static const char *TAG = "app_cfg";
 
+static const app_config_nvs_ops_t s_default_nvs_ops = {
+    .open = nvs_open,
+    .close = nvs_close,
+    .get_blob = nvs_get_blob,
+    .set_blob = nvs_set_blob,
+    .commit = nvs_commit,
+};
+
+static app_config_nvs_ops_t s_nvs_ops = {
+    .open = nvs_open,
+    .close = nvs_close,
+    .get_blob = nvs_get_blob,
+    .set_blob = nvs_set_blob,
+    .commit = nvs_commit,
+};
+
+void app_config_use_custom_nvs_ops(const app_config_nvs_ops_t *ops)
+{
+    if (!ops) {
+        s_nvs_ops = s_default_nvs_ops;
+        return;
+    }
+
+    s_nvs_ops.open = ops->open ? ops->open : s_default_nvs_ops.open;
+    s_nvs_ops.close = ops->close ? ops->close : s_default_nvs_ops.close;
+    s_nvs_ops.get_blob = ops->get_blob ? ops->get_blob : s_default_nvs_ops.get_blob;
+    s_nvs_ops.set_blob = ops->set_blob ? ops->set_blob : s_default_nvs_ops.set_blob;
+    s_nvs_ops.commit = ops->commit ? ops->commit : s_default_nvs_ops.commit;
+}
+
 void app_config_get_defaults(app_config_t *cfg)
 {
     if (!cfg) {
@@ -32,29 +62,33 @@ esp_err_t app_config_load(app_config_t *cfg)
     app_config_get_defaults(cfg);
 
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(APP_CONFIG_NAMESPACE, NVS_READONLY, &nvs);
+    esp_err_t err = s_nvs_ops.open(APP_CONFIG_NAMESPACE, NVS_READONLY, &nvs);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "No configuration stored yet (%s)", esp_err_to_name(err));
         return err;
     }
 
     size_t required = 0;
-    err = nvs_get_blob(nvs, APP_CONFIG_BLOB_KEY, NULL, &required);
+    err = s_nvs_ops.get_blob(nvs, APP_CONFIG_BLOB_KEY, NULL, &required);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(TAG, "Configuration blob not found; using defaults");
-        nvs_close(nvs);
+        if (s_nvs_ops.close) {
+            s_nvs_ops.close(nvs);
+        }
         return ESP_ERR_NVS_NOT_FOUND;
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to query configuration size (%s)", esp_err_to_name(err));
-        nvs_close(nvs);
+        if (s_nvs_ops.close) {
+            s_nvs_ops.close(nvs);
+        }
         app_config_get_defaults(cfg);
         return err;
     }
 
     esp_err_t load_err = ESP_OK;
     if (required == sizeof(app_config_t)) {
-        load_err = nvs_get_blob(nvs, APP_CONFIG_BLOB_KEY, cfg, &required);
+        load_err = s_nvs_ops.get_blob(nvs, APP_CONFIG_BLOB_KEY, cfg, &required);
     } else {
         typedef struct {
             char ssid[APP_CONFIG_MAX_SSID_LEN + 1];
@@ -68,7 +102,7 @@ esp_err_t app_config_load(app_config_t *cfg)
 
         if (required == sizeof(app_config_legacy_t)) {
             app_config_legacy_t legacy = {0};
-            load_err = nvs_get_blob(nvs, APP_CONFIG_BLOB_KEY, &legacy, &required);
+            load_err = s_nvs_ops.get_blob(nvs, APP_CONFIG_BLOB_KEY, &legacy, &required);
             if (load_err == ESP_OK) {
                 strlcpy(cfg->ssid, legacy.ssid, sizeof(cfg->ssid));
                 strlcpy(cfg->password, legacy.password, sizeof(cfg->password));
@@ -84,7 +118,9 @@ esp_err_t app_config_load(app_config_t *cfg)
             load_err = ESP_ERR_NVS_INVALID_LENGTH;
         }
     }
-    nvs_close(nvs);
+    if (s_nvs_ops.close) {
+        s_nvs_ops.close(nvs);
+    }
     if (load_err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to load configuration (%s)", esp_err_to_name(load_err));
         app_config_get_defaults(cfg);
@@ -99,15 +135,23 @@ esp_err_t app_config_save(const app_config_t *cfg)
         return ESP_ERR_INVALID_ARG;
     }
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(APP_CONFIG_NAMESPACE, NVS_READWRITE, &nvs);
+    esp_err_t err = s_nvs_ops.open(APP_CONFIG_NAMESPACE, NVS_READWRITE, &nvs);
     if (err != ESP_OK) {
         return err;
     }
-    err = nvs_set_blob(nvs, APP_CONFIG_BLOB_KEY, cfg, sizeof(app_config_t));
-    if (err == ESP_OK) {
-        err = nvs_commit(nvs);
+    if (!s_nvs_ops.set_blob) {
+        if (s_nvs_ops.close) {
+            s_nvs_ops.close(nvs);
+        }
+        return ESP_ERR_INVALID_STATE;
     }
-    nvs_close(nvs);
+    err = s_nvs_ops.set_blob(nvs, APP_CONFIG_BLOB_KEY, cfg, sizeof(app_config_t));
+    if (err == ESP_OK && s_nvs_ops.commit) {
+        err = s_nvs_ops.commit(nvs);
+    }
+    if (s_nvs_ops.close) {
+        s_nvs_ops.close(nvs);
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save configuration (%s)", esp_err_to_name(err));
     }

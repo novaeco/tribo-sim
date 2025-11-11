@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "nvs.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,9 +36,18 @@ typedef struct {
     bool auto_provision_root_ca;
 } app_config_t;
 
+typedef struct {
+    esp_err_t (*open)(const char *name, nvs_open_mode_t open_mode, nvs_handle_t *out_handle);
+    void (*close)(nvs_handle_t handle);
+    esp_err_t (*get_blob)(nvs_handle_t handle, const char *key, void *out_value, size_t *length);
+    esp_err_t (*set_blob)(nvs_handle_t handle, const char *key, const void *value, size_t length);
+    esp_err_t (*commit)(nvs_handle_t handle);
+} app_config_nvs_ops_t;
+
 void app_config_get_defaults(app_config_t *cfg);
 esp_err_t app_config_load(app_config_t *cfg);
 esp_err_t app_config_save(const app_config_t *cfg);
+void app_config_use_custom_nvs_ops(const app_config_nvs_ops_t *ops);
 
 #ifdef __cplusplus
 }

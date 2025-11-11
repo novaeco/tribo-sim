@@ -36,10 +36,12 @@ void app_main(void)
 
     app_config_t config;
     esp_err_t cfg_err = app_config_load(&config);
-    if (cfg_err != ESP_OK && cfg_err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "Chargement configuration échoué: %s", esp_err_to_name(cfg_err));
+    if (cfg_err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGI(TAG, "Aucune configuration persistée, utilisation des valeurs par défaut");
+    } else if (cfg_err != ESP_OK) {
+        ESP_LOGE(TAG, "Chargement configuration échoué: %s", esp_err_to_name(cfg_err));
+        app_config_get_defaults(&config);
     }
-    app_config_load(&config);
 
     ESP_ERROR_CHECK(display_driver_init());
     ESP_ERROR_CHECK(ui_init(&config));
