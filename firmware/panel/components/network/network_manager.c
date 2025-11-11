@@ -103,6 +103,42 @@ typedef struct {
 
 static network_context_t s_ctx = {0};
 
+static const network_manager_runtime_ops_t s_default_runtime_ops = {
+    .wifi_init = esp_wifi_init,
+    .wifi_set_mode = esp_wifi_set_mode,
+    .wifi_set_config = esp_wifi_set_config,
+    .wifi_start = esp_wifi_start,
+    .wifi_stop = esp_wifi_stop,
+    .wifi_deinit = esp_wifi_deinit,
+    .wifi_connect = esp_wifi_connect,
+    .wifi_disconnect = esp_wifi_disconnect,
+    .task_create_pinned_to_core = xTaskCreatePinnedToCore,
+    .task_delete = vTaskDelete,
+    .timer_create = esp_timer_create,
+    .timer_stop = esp_timer_stop,
+    .timer_delete = esp_timer_delete,
+    .event_handler_register = esp_event_handler_instance_register,
+    .event_handler_unregister = esp_event_handler_instance_unregister,
+};
+
+static network_manager_runtime_ops_t s_runtime_ops = {
+    .wifi_init = esp_wifi_init,
+    .wifi_set_mode = esp_wifi_set_mode,
+    .wifi_set_config = esp_wifi_set_config,
+    .wifi_start = esp_wifi_start,
+    .wifi_stop = esp_wifi_stop,
+    .wifi_deinit = esp_wifi_deinit,
+    .wifi_connect = esp_wifi_connect,
+    .wifi_disconnect = esp_wifi_disconnect,
+    .task_create_pinned_to_core = xTaskCreatePinnedToCore,
+    .task_delete = vTaskDelete,
+    .timer_create = esp_timer_create,
+    .timer_stop = esp_timer_stop,
+    .timer_delete = esp_timer_delete,
+    .event_handler_register = esp_event_handler_instance_register,
+    .event_handler_unregister = esp_event_handler_instance_unregister,
+};
+
 static void network_task(void *arg);
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void reconnect_timer_cb(void *arg);
@@ -154,6 +190,60 @@ static void network_update_certificate_plan(void)
     }
 }
 
+void network_manager_use_custom_runtime_ops(const network_manager_runtime_ops_t *ops)
+{
+    s_runtime_ops = s_default_runtime_ops;
+    if (ops == NULL) {
+        return;
+    }
+
+    if (ops->wifi_init != NULL) {
+        s_runtime_ops.wifi_init = ops->wifi_init;
+    }
+    if (ops->wifi_set_mode != NULL) {
+        s_runtime_ops.wifi_set_mode = ops->wifi_set_mode;
+    }
+    if (ops->wifi_set_config != NULL) {
+        s_runtime_ops.wifi_set_config = ops->wifi_set_config;
+    }
+    if (ops->wifi_start != NULL) {
+        s_runtime_ops.wifi_start = ops->wifi_start;
+    }
+    if (ops->wifi_stop != NULL) {
+        s_runtime_ops.wifi_stop = ops->wifi_stop;
+    }
+    if (ops->wifi_deinit != NULL) {
+        s_runtime_ops.wifi_deinit = ops->wifi_deinit;
+    }
+    if (ops->wifi_connect != NULL) {
+        s_runtime_ops.wifi_connect = ops->wifi_connect;
+    }
+    if (ops->wifi_disconnect != NULL) {
+        s_runtime_ops.wifi_disconnect = ops->wifi_disconnect;
+    }
+    if (ops->task_create_pinned_to_core != NULL) {
+        s_runtime_ops.task_create_pinned_to_core = ops->task_create_pinned_to_core;
+    }
+    if (ops->task_delete != NULL) {
+        s_runtime_ops.task_delete = ops->task_delete;
+    }
+    if (ops->timer_create != NULL) {
+        s_runtime_ops.timer_create = ops->timer_create;
+    }
+    if (ops->timer_stop != NULL) {
+        s_runtime_ops.timer_stop = ops->timer_stop;
+    }
+    if (ops->timer_delete != NULL) {
+        s_runtime_ops.timer_delete = ops->timer_delete;
+    }
+    if (ops->event_handler_register != NULL) {
+        s_runtime_ops.event_handler_register = ops->event_handler_register;
+    }
+    if (ops->event_handler_unregister != NULL) {
+        s_runtime_ops.event_handler_unregister = ops->event_handler_unregister;
+    }
+}
+
 esp_err_t network_manager_init(const app_config_t *config)
 {
     if (!config) {
@@ -182,9 +272,21 @@ esp_err_t network_manager_init(const app_config_t *config)
             wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
             wifi_cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
             wifi_cfg.sta.sae_pk_mode = WPA3_SAE_PK_MODE_AUTOMATIC;
-            ESP_RETURN_ON_ERROR(esp_wifi_disconnect(), TAG, "disconnect before reconfig");
-            ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "update wifi cfg");
-            ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "reconnect wifi");
+            esp_err_t err = s_runtime_ops.wifi_disconnect();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to disconnect STA before reconfig: %s", esp_err_to_name(err));
+                return err;
+            }
+            err = s_runtime_ops.wifi_set_config(WIFI_IF_STA, &wifi_cfg);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to update STA configuration: %s", esp_err_to_name(err));
+                return err;
+            }
+            err = s_runtime_ops.wifi_connect();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to reconnect STA: %s", esp_err_to_name(err));
+                return err;
+            }
             network_set_state(NETWORK_STATE_CONNECTING);
         }
         network_update_certificate_plan();
@@ -202,13 +304,24 @@ esp_err_t network_manager_start(const app_config_t *config)
     if (!config) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    esp_err_t err = ESP_OK;
+    bool wifi_init_performed = false;
+    bool wifi_events_created = false;
+    bool command_queue_created = false;
+    bool wifi_handler_registered = false;
+    bool ip_handler_registered = false;
+    bool wifi_started = false;
+    bool timer_created = false;
+    bool task_created = false;
+
     s_ctx.config = *config;
     memset(&s_ctx.status, 0, sizeof(s_ctx.status));
     memset(&s_ctx.species, 0, sizeof(s_ctx.species));
     s_ctx.species_loaded = false;
 
     if (!s_ctx.wifi_initialized) {
-        esp_err_t err = esp_netif_init();
+        err = esp_netif_init();
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
             return err;
         }
@@ -218,31 +331,66 @@ esp_err_t network_manager_start(const app_config_t *config)
         }
         esp_netif_create_default_wifi_sta();
         wifi_init_config_t wifi_init_cfg = WIFI_INIT_CONFIG_DEFAULT();
-        ESP_RETURN_ON_ERROR(esp_wifi_init(&wifi_init_cfg), TAG, "wifi init");
+        err = s_runtime_ops.wifi_init(&wifi_init_cfg);
+        if (err == ESP_ERR_WIFI_INIT_STATE) {
+            ESP_LOGW(TAG, "Wi-Fi driver already initialized");
+            err = ESP_OK;
+        } else if (err == ESP_OK) {
+            wifi_init_performed = true;
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to initialize Wi-Fi driver: %s", esp_err_to_name(err));
+            return err;
+        }
         s_ctx.wifi_initialized = true;
     }
 
     if (!s_ctx.wifi_events) {
         s_ctx.wifi_events = xEventGroupCreate();
         if (!s_ctx.wifi_events) {
-            return ESP_ERR_NO_MEM;
+            err = ESP_ERR_NO_MEM;
+            goto fail;
         }
+        wifi_events_created = true;
     }
     if (!s_ctx.command_queue) {
         s_ctx.command_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(network_command_t));
         if (!s_ctx.command_queue) {
-            vEventGroupDelete(s_ctx.wifi_events);
-            s_ctx.wifi_events = NULL;
-            return ESP_ERR_NO_MEM;
+            err = ESP_ERR_NO_MEM;
+            goto fail;
+        }
+        command_queue_created = true;
+    }
+
+    if (s_ctx.wifi_any_handle == NULL) {
+        err = s_runtime_ops.event_handler_register(
+            WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &s_ctx.wifi_any_handle);
+        if (err == ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "WIFI_EVENT handler already registered");
+            err = ESP_OK;
+        } else if (err == ESP_OK) {
+            wifi_handler_registered = true;
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to register WIFI_EVENT handler: %s", esp_err_to_name(err));
+            goto fail;
         }
     }
 
-    ESP_RETURN_ON_ERROR(
-        esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &s_ctx.wifi_any_handle), TAG,
-        "wifi handler");
-    ESP_RETURN_ON_ERROR(
-        esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &s_ctx.ip_got_handle), TAG,
-        "ip handler");
+    if (s_ctx.ip_got_handle == NULL) {
+        err = s_runtime_ops.event_handler_register(
+            IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &s_ctx.ip_got_handle);
+        if (err == ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "IP_EVENT handler already registered");
+            err = ESP_OK;
+        } else if (err == ESP_OK) {
+            ip_handler_registered = true;
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to register IP_EVENT handler: %s", esp_err_to_name(err));
+            goto fail;
+        }
+    }
 
     wifi_config_t wifi_cfg = {0};
     strlcpy((char *)wifi_cfg.sta.ssid, config->ssid, sizeof(wifi_cfg.sta.ssid));
@@ -251,10 +399,35 @@ esp_err_t network_manager_start(const app_config_t *config)
     wifi_cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
     wifi_cfg.sta.sae_pk_mode = WPA3_SAE_PK_MODE_AUTOMATIC;
 
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "set mode");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "set wifi config");
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
-    ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "wifi connect");
+    err = s_runtime_ops.wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set Wi-Fi mode: %s", esp_err_to_name(err));
+        goto fail;
+    }
+    err = s_runtime_ops.wifi_set_config(WIFI_IF_STA, &wifi_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set STA configuration: %s", esp_err_to_name(err));
+        goto fail;
+    }
+    err = s_runtime_ops.wifi_start();
+    if (err == ESP_ERR_WIFI_CONN || err == ESP_ERR_WIFI_NOT_INIT) {
+        ESP_LOGE(TAG, "Failed to start Wi-Fi: %s", esp_err_to_name(err));
+        goto fail;
+    } else if (err == ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Wi-Fi already started");
+        err = ESP_OK;
+    } else if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start Wi-Fi: %s", esp_err_to_name(err));
+        goto fail;
+    } else {
+        wifi_started = true;
+    }
+
+    err = s_runtime_ops.wifi_connect();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to connect Wi-Fi: %s", esp_err_to_name(err));
+        goto fail;
+    }
 
     if (!s_ctx.reconnect_timer) {
         const esp_timer_create_args_t args = {
@@ -263,20 +436,72 @@ esp_err_t network_manager_start(const app_config_t *config)
             .dispatch_method = ESP_TIMER_TASK,
             .name = "net_reconnect",
         };
-        ESP_RETURN_ON_ERROR(esp_timer_create(&args, &s_ctx.reconnect_timer), TAG, "reconnect timer");
+        err = s_runtime_ops.timer_create(&args, &s_ctx.reconnect_timer);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create reconnect timer: %s", esp_err_to_name(err));
+            goto fail;
+        }
+        timer_created = true;
     }
 
     if (!s_ctx.task_handle) {
-        BaseType_t ok = xTaskCreatePinnedToCore(network_task, "net_task", 8192, NULL, 5, &s_ctx.task_handle, 0);
+        BaseType_t ok = s_runtime_ops.task_create_pinned_to_core(network_task, "net_task", 8192, NULL, 5,
+                                                                 &s_ctx.task_handle, 0);
         if (ok != pdPASS) {
-            return ESP_ERR_NO_MEM;
+            ESP_LOGE(TAG, "Failed to create network task");
+            err = ESP_ERR_NO_MEM;
+            goto fail;
         }
+        task_created = true;
     }
 
     s_ctx.started = true;
     s_ctx.reconnect_backoff_ms = NETWORK_RECONNECT_MIN_MS;
     network_set_state(NETWORK_STATE_CONNECTING);
     return ESP_OK;
+
+fail:
+    if (task_created && s_ctx.task_handle) {
+        s_runtime_ops.task_delete(s_ctx.task_handle);
+        s_ctx.task_handle = NULL;
+    }
+    if (timer_created && s_ctx.reconnect_timer) {
+        s_runtime_ops.timer_stop(s_ctx.reconnect_timer);
+        s_runtime_ops.timer_delete(s_ctx.reconnect_timer);
+        s_ctx.reconnect_timer = NULL;
+    }
+    if (ip_handler_registered && s_ctx.ip_got_handle) {
+        s_runtime_ops.event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ctx.ip_got_handle);
+        s_ctx.ip_got_handle = NULL;
+    }
+    if (wifi_handler_registered && s_ctx.wifi_any_handle) {
+        s_runtime_ops.event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_ctx.wifi_any_handle);
+        s_ctx.wifi_any_handle = NULL;
+    }
+    if (command_queue_created && s_ctx.command_queue) {
+        vQueueDelete(s_ctx.command_queue);
+        s_ctx.command_queue = NULL;
+    }
+    if (wifi_events_created && s_ctx.wifi_events) {
+        vEventGroupDelete(s_ctx.wifi_events);
+        s_ctx.wifi_events = NULL;
+    }
+    if (wifi_started) {
+        esp_err_t stop_err = s_runtime_ops.wifi_stop();
+        if (stop_err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to stop Wi-Fi after error: %s", esp_err_to_name(stop_err));
+        }
+    }
+    if (wifi_init_performed) {
+        esp_err_t deinit_err = s_runtime_ops.wifi_deinit();
+        if (deinit_err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to deinit Wi-Fi after error: %s", esp_err_to_name(deinit_err));
+        } else {
+            s_ctx.wifi_initialized = false;
+        }
+    }
+    s_ctx.started = false;
+    return err;
 }
 
 esp_err_t network_manager_stop(void)
@@ -287,13 +512,13 @@ esp_err_t network_manager_stop(void)
     s_ctx.started = false;
 
     if (s_ctx.reconnect_timer) {
-        esp_timer_stop(s_ctx.reconnect_timer);
-        esp_timer_delete(s_ctx.reconnect_timer);
+        s_runtime_ops.timer_stop(s_ctx.reconnect_timer);
+        s_runtime_ops.timer_delete(s_ctx.reconnect_timer);
         s_ctx.reconnect_timer = NULL;
     }
 
     if (s_ctx.task_handle) {
-        vTaskDelete(s_ctx.task_handle);
+        s_runtime_ops.task_delete(s_ctx.task_handle);
         s_ctx.task_handle = NULL;
     }
 
@@ -308,17 +533,17 @@ esp_err_t network_manager_stop(void)
     }
 
     if (s_ctx.wifi_any_handle) {
-        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_ctx.wifi_any_handle);
+        s_runtime_ops.event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_ctx.wifi_any_handle);
         s_ctx.wifi_any_handle = NULL;
     }
     if (s_ctx.ip_got_handle) {
-        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ctx.ip_got_handle);
+        s_runtime_ops.event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ctx.ip_got_handle);
         s_ctx.ip_got_handle = NULL;
     }
 
     if (s_ctx.wifi_initialized) {
-        esp_wifi_disconnect();
-        esp_wifi_stop();
+        s_runtime_ops.wifi_disconnect();
+        s_runtime_ops.wifi_stop();
     }
 
     memset(&s_ctx.status, 0, sizeof(s_ctx.status));
