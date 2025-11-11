@@ -29,6 +29,11 @@ const uint8_t *credentials_server_key(size_t *len);
 bool credentials_authorize_bearer(const char *authorization_header);
 
 /**
+ * @brief Check whether a bootstrap bearer token is currently pending claim.
+ */
+bool credentials_bootstrap_token_available(void);
+
+/**
  * @brief Return the bootstrap bearer token (only available on the boot when generated).
  */
 const char *credentials_bootstrap_token(void);

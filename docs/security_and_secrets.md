@@ -8,8 +8,21 @@
   - Validité : 180 jours (renouvellement automatique si la date courante dépasse `J-30`).
   - Stockage : partition NVS chiffrée (`nvs_keys` + `nvs` encrypté via `CONFIG_NVS_ENCRYPTION`).
 - **API Bearer token** : un secret hexadécimal de 64 caractères est généré, salé (SHA-256) et stocké en NVS chiffré.
-  - Le token en clair est **imprimé une seule fois** sur la console USB (`HTTP API bootstrap token`). Sauvegardez-le dans un coffre (Vault, Bitwarden…).
+  - Le token en clair **n'est plus journalisé** : au boot, un log prévient simplement qu'il est disponible via la console série sécurisée (`secure> token`).
   - Toute requête HTTPS doit inclure `Authorization: Bearer <token>`.
+
+## Console série sécurisée
+
+- La console USB CDC embarque un REPL restreint (`prompt secure>`), uniquement accessible depuis le port maintenance physique.
+- Commande disponible :
+
+  ```text
+  secure> token           # Affiche le jeton s'il n'a jamais été divulgué
+  secure> token --rotate  # Invalide l'ancien secret et affiche le nouveau jeton
+  ```
+
+- Chaque jeton n'est affiché qu'une seule fois. Copiez-le immédiatement dans un coffre (Vault, Bitwarden…).
+- La rotation via `--rotate` force la génération d'un nouveau secret (mêmes garanties cryptographiques que lors du provisionnement initial).
 
 ## Rotation manuelle
 
@@ -42,11 +55,11 @@ Réponse :
 
 ## Procédure de récupération
 
-1. Connectez-vous en USB et capturez le nouveau token (`idf.py -p /dev/ttyACM0 monitor`).
+1. Connectez-vous en USB (`idf.py -p /dev/ttyACM0 monitor`) et saisissez `token` pour afficher le secret actif.
 2. Si le token est perdu :
-   - Redémarrer en mode maintenance.
-   - Exécuter `curl -k ... rotate_token true` via un client possédant encore l’ancien token.
-   - En ultime recours : `idf.py erase_flash` efface toutes les secrets (reprovisionnement complet requis).
+   - Utiliser `token --rotate` depuis la console sécurisée pour invalider l'ancien secret.
+   - À défaut d'accès physique, un client disposant encore du token courant peut appeler `POST /api/security/rotate`.
+   - En ultime recours : `idf.py erase_flash` efface tous les secrets (reprovisionnement complet requis).
 
 ## CI/CD
 

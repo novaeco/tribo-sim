@@ -344,6 +344,11 @@ const uint8_t *credentials_server_key(size_t *len)
     return (const uint8_t *)s_key_pem;
 }
 
+bool credentials_bootstrap_token_available(void)
+{
+    return s_bootstrap_available;
+}
+
 const char *credentials_bootstrap_token(void)
 {
     if (s_bootstrap_available) {

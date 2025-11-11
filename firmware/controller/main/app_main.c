@@ -29,6 +29,7 @@
 #include "drivers/dome_bus.h"
 #include "storage.h"
 #include "net/credentials.h"
+#include "secure_console.h"
 
 static const char *TAG = "CTRL_APP";
 static const uint8_t k_dome_channels[] = {
@@ -341,10 +342,13 @@ void app_main(void)
     // Secure storage init
     ESP_ERROR_CHECK(storage_secure_init());
     ESP_ERROR_CHECK(credentials_init());
-    const char *bootstrap_token = credentials_bootstrap_token();
-    if (bootstrap_token) {
-        ESP_LOGW(TAG, "HTTP API bootstrap token: %s", bootstrap_token);
-        ESP_LOGW(TAG, "Store this token securely; it will not be displayed again.");
+    if (credentials_bootstrap_token_available()) {
+        ESP_LOGW(TAG, "HTTP API bootstrap token disponible via la console série sécurisée.");
+    }
+
+    esp_err_t console_err = secure_console_start();
+    if (console_err != ESP_OK) {
+        ESP_LOGE(TAG, "Initialisation de la console sécurisée échouée: %s", esp_err_to_name(console_err));
     }
 
     ESP_ERROR_CHECK(alarms_init());
