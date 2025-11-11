@@ -134,13 +134,33 @@ static void btn_rearm_task(void *arg){
             esp_err_t mute_err = alarms_set_mute(false);
             if (mute_err == ESP_OK){
                 // Feedback: quick 3 beeps
-                for (int i=0;i<3;i++){
-                    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 512);
-                    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
-                    vTaskDelay(pdMS_TO_TICKS(120));
-                    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 0);
-                    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
-                    vTaskDelay(pdMS_TO_TICKS(120));
+                if (!alarms_wait_ready(pdMS_TO_TICKS(1000))) {
+                    ESP_LOGW(TAG, "Buzzer feedback skipped: not ready");
+                } else {
+                    for (int i=0;i<3;i++){
+                        esp_err_t duty_err = ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 512);
+                        if (duty_err != ESP_OK) {
+                            ESP_LOGE(TAG, "ledc_set_duty(ON) failed: %s", esp_err_to_name(duty_err));
+                            break;
+                        }
+                        duty_err = ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
+                        if (duty_err != ESP_OK) {
+                            ESP_LOGE(TAG, "ledc_update_duty(ON) failed: %s", esp_err_to_name(duty_err));
+                            break;
+                        }
+                        vTaskDelay(pdMS_TO_TICKS(120));
+                        duty_err = ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 0);
+                        if (duty_err != ESP_OK) {
+                            ESP_LOGE(TAG, "ledc_set_duty(OFF) failed: %s", esp_err_to_name(duty_err));
+                            break;
+                        }
+                        duty_err = ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
+                        if (duty_err != ESP_OK) {
+                            ESP_LOGE(TAG, "ledc_update_duty(OFF) failed: %s", esp_err_to_name(duty_err));
+                            break;
+                        }
+                        vTaskDelay(pdMS_TO_TICKS(120));
+                    }
                 }
             } else {
                 ESP_LOGE(TAG, "Failed to clear alarm mute: %s", esp_err_to_name(mute_err));
