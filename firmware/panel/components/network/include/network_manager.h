@@ -3,8 +3,16 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "esp_err.h"
+#include "esp_event.h"
 #include "esp_http_client.h"
+#include "esp_timer.h"
+#include "esp_wifi.h"
+
 #include "app_config.h"
 
 esp_err_t network_http_event_handler_cb(esp_http_client_event_t *evt);
@@ -128,6 +136,36 @@ typedef struct {
     size_t length;
 } network_root_ca_status_t;
 
+typedef struct {
+    esp_err_t (*wifi_init)(const wifi_init_config_t *config);
+    esp_err_t (*wifi_set_mode)(wifi_mode_t mode);
+    esp_err_t (*wifi_set_config)(wifi_interface_t interface, wifi_config_t *config);
+    esp_err_t (*wifi_start)(void);
+    esp_err_t (*wifi_stop)(void);
+    esp_err_t (*wifi_deinit)(void);
+    esp_err_t (*wifi_connect)(void);
+    esp_err_t (*wifi_disconnect)(void);
+    BaseType_t (*task_create_pinned_to_core)(TaskFunction_t task,
+                                             const char *name,
+                                             const uint32_t stack_depth,
+                                             void *params,
+                                             UBaseType_t priority,
+                                             TaskHandle_t *out_handle,
+                                             const BaseType_t core_id);
+    void (*task_delete)(TaskHandle_t handle);
+    esp_err_t (*timer_create)(const esp_timer_create_args_t *args, esp_timer_handle_t *out_timer);
+    esp_err_t (*timer_stop)(esp_timer_handle_t timer);
+    esp_err_t (*timer_delete)(esp_timer_handle_t timer);
+    esp_err_t (*event_handler_register)(esp_event_base_t event_base,
+                                        int32_t event_id,
+                                        esp_event_handler_t handler,
+                                        void *handler_arg,
+                                        esp_event_handler_instance_t *instance_out);
+    esp_err_t (*event_handler_unregister)(esp_event_base_t event_base,
+                                          int32_t event_id,
+                                          esp_event_handler_instance_t instance);
+} network_manager_runtime_ops_t;
+
 esp_err_t network_manager_init(const app_config_t *config);
 esp_err_t network_manager_start(const app_config_t *config);
 esp_err_t network_manager_stop(void);
@@ -135,6 +173,8 @@ esp_err_t network_manager_stop(void);
 esp_err_t network_manager_register_status_callback(network_status_cb_t cb, void *ctx);
 void      network_manager_register_error_callback(network_error_cb_t cb, void *ctx);
 void      network_manager_register_species_callback(network_species_cb_t cb, void *ctx);
+
+void network_manager_use_custom_runtime_ops(const network_manager_runtime_ops_t *ops);
 
 esp_err_t network_manager_post_light(const terrarium_light_command_t *cmd);
 esp_err_t network_manager_fetch_calibration(void);
