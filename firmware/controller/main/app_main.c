@@ -392,7 +392,10 @@ void app_main(void)
     }
 
     // Bring Wi-Fi + HTTP up (stubs)
-    wifi_start_apsta("terrarium-s3", "terrarium123");
+    esp_err_t wifi_err = wifi_start_apsta("terrarium-s3", "terrarium123");
+    if (wifi_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start Wi-Fi: %s", esp_err_to_name(wifi_err));
+    }
     httpd_start_secure();
 
     // Start alarms task (buzzer patterns)
