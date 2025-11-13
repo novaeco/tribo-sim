@@ -29,5 +29,5 @@ idf_component_register(
          "../common/ota_keys.c"
          "../common/monocypher.c"
     INCLUDE_DIRS "include" "drivers" "net" "../common"
-    REQUIRES driver esp_wifi esp_http_server nvs_flash esp_timer esp_adc json mbedtls console
+    REQUIRES driver esp_driver_i2c esp_driver_gpio esp_driver_ledc esp_wifi esp_http_server nvs_flash esp_timer esp_adc json mbedtls console
 )

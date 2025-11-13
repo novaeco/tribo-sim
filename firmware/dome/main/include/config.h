@@ -1,5 +1,5 @@
 #pragma once
-#include "driver/adc.h"
+#include "esp_adc/adc_oneshot.h"
 
 // I2C slave pins/address
 #define DOME_I2C_SDA   8

@@ -10,7 +10,7 @@
 #include "drivers/dome_bus.h"
 #include "include/config.h"
 #include "dome_regs.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 
 static portMUX_TYPE s_stub_lock = portMUX_INITIALIZER_UNLOCKED;
 static int s_active_transactions = 0;

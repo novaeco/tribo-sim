@@ -7,5 +7,5 @@ idf_component_register(
          "drivers/ntc_adc.c"
          "drivers/uvi_sensor.c"
     INCLUDE_DIRS "include" "drivers"
-    REQUIRES driver nvs_flash esp_timer esp_adc
+    REQUIRES driver esp_driver_i2c esp_driver_ledc esp_driver_rmt nvs_flash esp_timer esp_adc
 )

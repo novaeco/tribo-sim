@@ -10,7 +10,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
+#include "freertos/FreeRTOS.h"
 
 #include "include/config.h"
 
@@ -68,6 +69,12 @@
 #ifndef DOME_UVI_I2C_PORT
 #define DOME_UVI_I2C_PORT I2C_NUM_0
 #endif
+#ifndef DOME_UVI_I2C_SDA
+#define DOME_UVI_I2C_SDA DOME_I2C_SDA
+#endif
+#ifndef DOME_UVI_I2C_SCL
+#define DOME_UVI_I2C_SCL DOME_I2C_SCL
+#endif
 #ifndef DOME_UVI_I2C_ADDR
 #define DOME_UVI_I2C_ADDR 0x10
 #endif
@@ -90,6 +97,46 @@ static bool s_initialized = false;
 static bool s_have_measurement = false;
 static uvi_sensor_measurement_t s_last = {0};
 static int64_t s_last_sample_us = 0;
+
+#if DOME_UVI_SENSOR_MODE == DOME_UVI_SENSOR_MODE_I2C
+static i2c_master_bus_handle_t s_uvi_bus = NULL;
+static i2c_master_dev_handle_t s_uvi_dev = NULL;
+
+static esp_err_t uvi_sensor_init_i2c_bus(void)
+{
+    if (s_uvi_bus && s_uvi_dev) {
+        return ESP_OK;
+    }
+    if (!s_uvi_bus) {
+        const i2c_master_bus_config_t bus_cfg = {
+            .i2c_port = DOME_UVI_I2C_PORT,
+            .sda_io_num = DOME_UVI_I2C_SDA,
+            .scl_io_num = DOME_UVI_I2C_SCL,
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .flags = {
+                .enable_internal_pullup = true,
+            },
+        };
+        esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_uvi_bus);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    if (!s_uvi_dev) {
+        const i2c_device_config_t dev_cfg = {
+            .device_address = DOME_UVI_I2C_ADDR,
+            .scl_speed_hz = 100000,
+            .addr_bit_len = I2C_ADDR_BIT_LEN_7BIT,
+        };
+        esp_err_t err = i2c_master_bus_add_device(s_uvi_bus, &dev_cfg, &s_uvi_dev);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    return ESP_OK;
+}
+#endif
 
 static esp_err_t uvi_sensor_init_adc(void)
 {
@@ -184,23 +231,19 @@ static bool uvi_sensor_read_i2c(float *irradiance_uW_cm2)
     if (!irradiance_uW_cm2) {
         return false;
     }
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    if (!cmd) {
+    if (uvi_sensor_init_i2c_bus() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize UVI I2C bus");
         return false;
     }
     uint8_t reg = DOME_UVI_I2C_REG_RESULT;
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (DOME_UVI_I2C_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write(cmd, &reg, 1, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (DOME_UVI_I2C_ADDR << 1) | I2C_MASTER_READ, true);
     uint8_t data[2] = {0};
-    i2c_master_read(cmd, data, sizeof(data), I2C_MASTER_LAST_NACK);
-    i2c_master_stop(cmd);
-    esp_err_t err = i2c_master_cmd_begin(DOME_UVI_I2C_PORT, cmd, pdMS_TO_TICKS(20));
-    i2c_cmd_link_delete(cmd);
+    esp_err_t err = i2c_master_transmit_receive(s_uvi_dev, &reg, 1, data, sizeof(data), pdMS_TO_TICKS(20));
+    if (err == ESP_ERR_TIMEOUT) {
+        ESP_LOGE(TAG, "UVI I2C read timeout");
+        return false;
+    }
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2c_master_cmd_begin failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "UVI I2C read failed: %s", esp_err_to_name(err));
         return false;
     }
     uint16_t raw = ((uint16_t)data[0] << 8) | data[1];
@@ -226,8 +269,11 @@ esp_err_t uvi_sensor_init(void)
         return err;
     }
 #elif DOME_UVI_SENSOR_MODE == DOME_UVI_SENSOR_MODE_I2C
-    // Assume I2C peripheral already configured elsewhere.
-    esp_err_t err = ESP_OK;
+    esp_err_t err = uvi_sensor_init_i2c_bus();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize I2C UVI sensor: %s", esp_err_to_name(err));
+        return err;
+    }
 #else
 #error "Unsupported DOME_UVI_SENSOR_MODE"
 #endif
