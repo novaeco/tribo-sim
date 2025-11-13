@@ -6,7 +6,8 @@
 #include "bme280.h"
 #include "tca9548a.h"
 #include "drivers/dome_bus.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
+#include "drivers/i2c_bus.h"
 #include "freertos/FreeRTOS.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -64,17 +65,64 @@ typedef struct {
 
 static sensors_state_t s_state = {0};
 
+typedef struct {
+    uint8_t addr;
+    i2c_master_dev_handle_t handle;
+} sensors_i2c_device_t;
+
+static sensors_i2c_device_t s_i2c_devices[4] = {0};
+
+static esp_err_t sensors_i2c_acquire(uint8_t addr, i2c_master_dev_handle_t *handle)
+{
+    if (!handle) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (size_t i = 0; i < sizeof(s_i2c_devices) / sizeof(s_i2c_devices[0]); ++i) {
+        if (s_i2c_devices[i].handle && s_i2c_devices[i].addr == addr) {
+            *handle = s_i2c_devices[i].handle;
+            return ESP_OK;
+        }
+    }
+    for (size_t i = 0; i < sizeof(s_i2c_devices) / sizeof(s_i2c_devices[0]); ++i) {
+        if (!s_i2c_devices[i].handle) {
+            i2c_master_bus_handle_t bus = i2c_bus_get_handle();
+            if (!bus) {
+                return ESP_ERR_INVALID_STATE;
+            }
+            const i2c_device_config_t cfg = {
+                .device_address = addr,
+                .scl_speed_hz = i2c_bus_get_frequency_hz() ? i2c_bus_get_frequency_hz() : 400000,
+                .addr_bit_len = I2C_ADDR_BIT_LEN_7BIT,
+            };
+            esp_err_t err = i2c_master_bus_add_device(bus, &cfg, &s_i2c_devices[i].handle);
+            if (err != ESP_OK) {
+                return err;
+            }
+            s_i2c_devices[i].addr = addr;
+            *handle = s_i2c_devices[i].handle;
+            return ESP_OK;
+        }
+    }
+    return ESP_ERR_NO_MEM;
+}
+
 static esp_err_t i2c_write_cmd16(i2c_port_t port, uint8_t addr, uint16_t cmd)
 {
+    (void)port;
+    i2c_master_dev_handle_t dev;
+    esp_err_t err = sensors_i2c_acquire(addr, &dev);
+    if (err != ESP_OK) {
+        return err;
+    }
     uint8_t buf[2] = {(uint8_t)(cmd >> 8), (uint8_t)(cmd & 0xFF)};
-    i2c_cmd_handle_t c = i2c_cmd_link_create();
-    i2c_master_start(c);
-    i2c_master_write_byte(c, (addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write(c, buf, sizeof(buf), true);
-    i2c_master_stop(c);
-    esp_err_t r = i2c_master_cmd_begin(port, c, 200 / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(c);
-    return r;
+    err = i2c_master_transmit(dev, buf, sizeof(buf), pdMS_TO_TICKS(200));
+    if (err == ESP_ERR_TIMEOUT) {
+        return err;
+    }
+    if (err != ESP_OK) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t sht21_user_reg_read(i2c_port_t port, uint8_t addr, uint8_t *reg)
@@ -82,37 +130,47 @@ static esp_err_t sht21_user_reg_read(i2c_port_t port, uint8_t addr, uint8_t *reg
     if (!reg) {
         return ESP_ERR_INVALID_ARG;
     }
-    i2c_cmd_handle_t c = i2c_cmd_link_create();
-    i2c_master_start(c);
-    i2c_master_write_byte(c, (addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(c, 0xE7, true);
-    i2c_master_stop(c);
-    esp_err_t r = i2c_master_cmd_begin(port, c, 200 / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(c);
-    if (r != ESP_OK) {
-        return r;
+    (void)port;
+    i2c_master_dev_handle_t dev;
+    esp_err_t err = sensors_i2c_acquire(addr, &dev);
+    if (err != ESP_OK) {
+        return err;
     }
-    c = i2c_cmd_link_create();
-    i2c_master_start(c);
-    i2c_master_write_byte(c, (addr << 1) | I2C_MASTER_READ, true);
-    i2c_master_read_byte(c, reg, I2C_MASTER_NACK);
-    i2c_master_stop(c);
-    r = i2c_master_cmd_begin(port, c, 200 / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(c);
-    return r;
+    uint8_t cmd = 0xE7;
+    err = i2c_master_transmit(dev, &cmd, 1, pdMS_TO_TICKS(200));
+    if (err == ESP_ERR_TIMEOUT) {
+        return err;
+    }
+    if (err != ESP_OK) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    err = i2c_master_receive(dev, reg, 1, pdMS_TO_TICKS(200));
+    if (err == ESP_ERR_TIMEOUT) {
+        return err;
+    }
+    if (err != ESP_OK) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t sht21_user_reg_write(i2c_port_t port, uint8_t addr, uint8_t reg)
 {
-    i2c_cmd_handle_t c = i2c_cmd_link_create();
-    i2c_master_start(c);
-    i2c_master_write_byte(c, (addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(c, 0xE6, true);
-    i2c_master_write_byte(c, reg, true);
-    i2c_master_stop(c);
-    esp_err_t r = i2c_master_cmd_begin(port, c, 200 / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(c);
-    return r;
+    (void)port;
+    i2c_master_dev_handle_t dev;
+    esp_err_t err = sensors_i2c_acquire(addr, &dev);
+    if (err != ESP_OK) {
+        return err;
+    }
+    uint8_t payload[2] = {0xE6, reg};
+    err = i2c_master_transmit(dev, payload, sizeof(payload), pdMS_TO_TICKS(200));
+    if (err == ESP_ERR_TIMEOUT) {
+        return err;
+    }
+    if (err != ESP_OK) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return ESP_OK;
 }
 
 static void update_status(terra_sensor_slot_t slot, bool present, bool error, esp_err_t last_err)

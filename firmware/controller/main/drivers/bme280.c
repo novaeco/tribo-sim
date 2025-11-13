@@ -3,56 +3,83 @@
 #include <math.h>
 
 #include "esp_log.h"
+#include "i2c_bus.h"
+#include "freertos/FreeRTOS.h"
+#include "esp_check.h"
 
 static uint8_t cal[26 + 16];
 static int32_t t_fine;
-static i2c_port_t g_port;
-static uint8_t g_addr;
+static i2c_master_dev_handle_t s_bme_dev = NULL;
+static uint8_t s_bme_addr = 0;
+
+static esp_err_t ensure_bme_device(uint8_t addr)
+{
+    if (s_bme_dev && s_bme_addr == addr) {
+        return ESP_OK;
+    }
+    if (s_bme_dev) {
+        (void)i2c_master_bus_rm_device(s_bme_dev);
+        s_bme_dev = NULL;
+        s_bme_addr = 0;
+    }
+    i2c_master_bus_handle_t bus = i2c_bus_get_handle();
+    if (!bus) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const i2c_device_config_t cfg = {
+        .device_address = addr,
+        .scl_speed_hz = i2c_bus_get_frequency_hz() ? i2c_bus_get_frequency_hz() : 400000,
+        .addr_bit_len = I2C_ADDR_BIT_LEN_7BIT,
+    };
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &cfg, &s_bme_dev), "bme280", "failed to add BME280 device");
+    s_bme_addr = addr;
+    return ESP_OK;
+}
 
 static esp_err_t rd(uint8_t reg, uint8_t *d, size_t n)
 {
-    i2c_cmd_handle_t c = i2c_cmd_link_create();
-    i2c_master_start(c);
-    i2c_master_write_byte(c, (g_addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(c, reg, true);
-    i2c_master_start(c);
-    i2c_master_write_byte(c, (g_addr << 1) | I2C_MASTER_READ, true);
-    if (n > 1) {
-        i2c_master_read(c, d, n - 1, I2C_MASTER_ACK);
+    if (!s_bme_dev) {
+        return ESP_ERR_INVALID_STATE;
     }
-    i2c_master_read_byte(c, &d[n - 1], I2C_MASTER_NACK);
-    i2c_master_stop(c);
-    esp_err_t r = i2c_master_cmd_begin(g_port, c, 200 / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(c);
-    return r;
+    esp_err_t err = i2c_master_transmit_receive(s_bme_dev, &reg, 1, d, n, pdMS_TO_TICKS(200));
+    if (err == ESP_OK || err == ESP_ERR_TIMEOUT) {
+        return err;
+    }
+    return ESP_ERR_INVALID_RESPONSE;
 }
 
 static esp_err_t wr(uint8_t reg, uint8_t v)
 {
-    i2c_cmd_handle_t c = i2c_cmd_link_create();
-    i2c_master_start(c);
-    i2c_master_write_byte(c, (g_addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(c, reg, true);
-    i2c_master_write_byte(c, v, true);
-    i2c_master_stop(c);
-    esp_err_t r = i2c_master_cmd_begin(g_port, c, 200 / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(c);
-    return r;
+    if (!s_bme_dev) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t payload[2] = {reg, v};
+    esp_err_t err = i2c_master_transmit(s_bme_dev, payload, sizeof(payload), pdMS_TO_TICKS(200));
+    if (err == ESP_OK || err == ESP_ERR_TIMEOUT) {
+        return err;
+    }
+    return ESP_ERR_INVALID_RESPONSE;
 }
 
 esp_err_t bme280_init(i2c_port_t port, uint8_t addr)
 {
-    g_port = port;
-    g_addr = addr;
+    (void)port;
+    esp_err_t err = ensure_bme_device(addr);
+    if (err != ESP_OK) {
+        return err;
+    }
     uint8_t id = 0;
-    rd(0xD0, &id, 1);
-    wr(0xE0, 0xB6);
+    err = rd(0xD0, &id, 1);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_RESPONSE) {
+        return err;
+    }
+    ESP_RETURN_ON_ERROR(wr(0xE0, 0xB6), "bme280", "reset failed");
     vTaskDelay(pdMS_TO_TICKS(5)); // reset
-    rd(0x88, cal, 26);
-    rd(0xE1, cal + 26, 16);
-    wr(0xF2, 0x01); // humidity oversampling x1
-    wr(0xF4, 0x27); // temp/press oversampling x1, mode normal
-    wr(0xF5, 0xA0); // standby 1000ms, filter off
+    ESP_RETURN_ON_ERROR(rd(0x88, cal, 26), "bme280", "calibration block read failed");
+    ESP_RETURN_ON_ERROR(rd(0xE1, cal + 26, 16), "bme280", "calibration block 2 read failed");
+    ESP_RETURN_ON_ERROR(wr(0xF2, 0x01), "bme280", "humidity oversampling write failed");
+    ESP_RETURN_ON_ERROR(wr(0xF4, 0x27), "bme280", "ctrl_meas write failed");
+    ESP_RETURN_ON_ERROR(wr(0xF5, 0xA0), "bme280", "config write failed");
     return ESP_OK;
 }
 
@@ -121,10 +148,19 @@ float bme280_compensate_humidity(int32_t adc_H)
 
 esp_err_t bme280_read(i2c_port_t port, uint8_t addr, bme280_data_t *out)
 {
-    g_port = port;
-    g_addr = addr;
+    (void)port;
+    esp_err_t err = ensure_bme_device(addr);
+    if (err != ESP_OK) {
+        return err;
+    }
     uint8_t d[8];
-    rd(0xF7, d, sizeof(d));
+    err = rd(0xF7, d, sizeof(d));
+    if (err == ESP_ERR_TIMEOUT) {
+        return err;
+    }
+    if (err != ESP_OK) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
     int32_t adc_P = ((int32_t)d[0] << 12) | ((int32_t)d[1] << 4) | (d[2] >> 4);
     int32_t adc_T = ((int32_t)d[3] << 12) | ((int32_t)d[4] << 4) | (d[5] >> 4);
     int32_t adc_H = ((int32_t)d[6] << 8) | d[7];

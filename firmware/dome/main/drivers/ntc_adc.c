@@ -3,7 +3,6 @@
 #include <math.h>
 #include <float.h>
 
-#include "driver/adc.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"

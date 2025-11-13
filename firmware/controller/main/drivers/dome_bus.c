@@ -2,7 +2,7 @@
 #include "drivers/dome_i2c.h"
 #include "include/config.h"
 #include "tca9548a.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
