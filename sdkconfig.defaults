@@ -25,6 +25,7 @@ CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 # ============================================
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x10000
 
 # ============================================
 # PSRAM configuration (required for LVGL)
