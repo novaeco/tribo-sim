@@ -1,0 +1,73 @@
+# ESP-IDF Build
+build/
+sdkconfig
+sdkconfig.old
+
+# Managed Components (downloaded by ESP-IDF)
+managed_components/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+*.egg
+venv/
+.venv/
+env/
+.env/
+
+# IDE - VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/c_cpp_properties.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+
+# IDE - CLion / IntelliJ
+.idea/
+*.iml
+
+# IDE - Eclipse
+.project
+.cproject
+.settings/
+.metadata/
+
+# MacOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+.directory
+
+# Editor swap files
+*.swp
+*.swo
+*.swn
+*.bak
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Compiled binaries
+*.o
+*.a
+*.so
+*.elf
+*.bin
+*.map
+
+# Keep build artifacts in CI/CD (GitHub Actions stores them as artifacts)
+# but ignore locally
