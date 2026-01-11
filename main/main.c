@@ -21,7 +21,7 @@ static const char *TAG = "MAIN";
 
 // Flag indicating that the user has pressed the "Commencer" button.
 // Updated from the LVGL event callback in sim_display.c.
-bool game_started = false;
+// Defined in game.c and declared in game.h
 
 void app_main(void)
 {
