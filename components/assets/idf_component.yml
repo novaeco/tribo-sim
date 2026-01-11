@@ -1,0 +1,6 @@
+## assets component - Image and sprite assets
+
+dependencies:
+  # LVGL graphics library for image definitions
+  lvgl/lvgl:
+    version: "^9.2.0"

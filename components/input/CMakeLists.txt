@@ -3,7 +3,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     # Dependencies:
     # - driver: I2C for GT911 communication
-    # - lvgl: For input device registration
+    # - lvgl_port: For LVGL configuration (lv_conf.h)
     # - esp_lcd_touch_gt911: Touch controller driver
-    REQUIRES driver lvgl esp_lcd_touch_gt911
+    REQUIRES driver lvgl_port esp_lcd_touch_gt911
 )
