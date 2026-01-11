@@ -2,8 +2,7 @@
 //
 // Handles initialisation of the GT911 touch controller via I2C and
 // provides a polling task that reads touch data and updates the
-// LVGL input driver state.  The driver scans the possible I2C
-// addresses (0x14 and 0x5D) to locate the GT911 at runtime.
+// LVGL input driver state.  Updated for LVGL 9.x API.
 
 #include <stdio.h>
 #include <string.h>
@@ -17,7 +16,6 @@
 #include "lvgl.h"
 
 #include "input.h"
-// No need to include the display header here; input is independent of display
 
 static const char *TAG = "INPUT";
 
@@ -25,34 +23,35 @@ static const char *TAG = "INPUT";
 static esp_lcd_touch_handle_t touch_handle = NULL;
 static esp_lcd_panel_io_handle_t touch_io = NULL;
 
+// LVGL input device
+static lv_indev_t *touch_indev = NULL;
+
 // Mutex to protect shared touch state
 static SemaphoreHandle_t touch_mutex;
 
 // Shared touch state accessed by LVGL via callback
 static bool s_touch_pressed = false;
-static uint16_t s_touch_x = 0;
-static uint16_t s_touch_y = 0;
+static int32_t s_touch_x = 0;
+static int32_t s_touch_y = 0;
 
-// LVGL input callback.  LVGL calls this function to obtain the
-// current pointer state.  It copies the last read coordinates
-// from the sensor_task().  Returns LV_INDEV_STATE_PRESSED or
-// LV_INDEV_STATE_RELEASED.
-static void lvgl_touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
+// LVGL input callback for LVGL 9.x API
+static void lvgl_touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
-    (void)drv;
+    (void)indev;
     if (xSemaphoreTake(touch_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         data->point.x = s_touch_x;
         data->point.y = s_touch_y;
         data->state = s_touch_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
         xSemaphoreGive(touch_mutex);
     } else {
-        // If we fail to take the mutex, return released state
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }
 
 void touch_init(void)
 {
+    ESP_LOGI(TAG, "Initializing touch controller GT911");
+
     // Configure the I2C master bus
     i2c_config_t i2c_conf = {
         .mode = I2C_MODE_MASTER,
@@ -81,15 +80,13 @@ void touch_init(void)
         }
     }
     if (addr_found == 0) {
-        ESP_LOGE(TAG, "GT911 non détecté sur le bus I2C, utilisation de 0x14 par défaut");
+        ESP_LOGE(TAG, "GT911 not detected on I2C bus, using default 0x14");
         addr_found = 0x14;
     } else {
-        ESP_LOGI(TAG, "GT911 détecté à l'adresse 0x%02X", addr_found);
+        ESP_LOGI(TAG, "GT911 detected at address 0x%02X", addr_found);
     }
 
-    // Create the panel IO handle for the touch device.  For the stub
-    // driver, the panel IO handle is unused but we keep this call for
-    // completeness and to maintain compatibility with the esp_lcd API.
+    // Create the panel IO handle for the touch device
     esp_lcd_panel_io_i2c_config_t io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
     io_config.dev_addr = addr_found;
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)CONFIG_TOUCH_I2C_PORT, &io_config, &touch_io));
@@ -110,7 +107,7 @@ void touch_init(void)
             .mirror_y = 0
         }
     };
-    // Initialise the stub GT911 driver
+    // Initialise the GT911 driver
     ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(touch_io, &touch_cfg, &touch_handle));
     // Override the I2C port and address based on our bus probing
     ESP_ERROR_CHECK(esp_lcd_touch_gt911_set_i2c_config(touch_handle, CONFIG_TOUCH_I2C_PORT, addr_found));
@@ -119,12 +116,12 @@ void touch_init(void)
     touch_mutex = xSemaphoreCreateMutex();
     assert(touch_mutex);
 
-    // Register LVGL input device
-    static lv_indev_drv_t indev_drv;
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = lvgl_touch_read_cb;
-    lv_indev_drv_register(&indev_drv);
+    // Register LVGL input device (LVGL 9.x API)
+    touch_indev = lv_indev_create();
+    lv_indev_set_type(touch_indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(touch_indev, lvgl_touch_read_cb);
+
+    ESP_LOGI(TAG, "Touch controller initialized successfully");
 }
 
 void sensor_task(void *arg)
