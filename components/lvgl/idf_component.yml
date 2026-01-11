@@ -1,0 +1,6 @@
+## This is a wrapper component for LVGL configuration
+## It provides lv_conf.h for the main LVGL library
+
+dependencies:
+  lvgl/lvgl:
+    version: "^9.2.0"
