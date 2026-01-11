@@ -34,7 +34,7 @@ static const char *TAG = "SIM_DISPLAY";
 
 // MIPI-DSI timing from JD9165 dtsi file
 #define MIPI_DSI_LANE_NUM          2
-#define MIPI_DSI_LANE_BITRATE_MBPS 500
+#define MIPI_DSI_LANE_BITRATE_MBPS 400
 
 // JD9165 timing parameters (from dtsi)
 #define JD9165_HSYNC    24
@@ -195,12 +195,18 @@ void display_init_panel(void)
     // Create MIPI-DSI bus
     ESP_LOGI(TAG, "Step 3: Creating MIPI-DSI bus (lanes=%d, bitrate=%d Mbps)",
              MIPI_DSI_LANE_NUM, MIPI_DSI_LANE_BITRATE_MBPS);
+
+    // Add delay before bus creation to allow clocks to stabilize
+    vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_LOGI(TAG, "Clocks stabilized, proceeding with bus creation");
+
     esp_lcd_dsi_bus_config_t bus_config = {
         .bus_id = 0,
         .num_data_lanes = MIPI_DSI_LANE_NUM,
         .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
         .lane_bit_rate_mbps = MIPI_DSI_LANE_BITRATE_MBPS,
     };
+    ESP_LOGI(TAG, "Calling esp_lcd_new_dsi_bus()...");
     esp_err_t ret = esp_lcd_new_dsi_bus(&bus_config, &dsi_bus);
     ESP_LOGI(TAG, "MIPI-DSI bus creation result: %s (0x%x)", esp_err_to_name(ret), ret);
     ESP_ERROR_CHECK(ret);
