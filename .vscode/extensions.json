@@ -1,9 +1,0 @@
-{
-    "recommendations": [
-        "espressif.esp-idf-extension",
-        "ms-vscode.cpptools",
-        "EditorConfig.EditorConfig",
-        "streetsidesoftware.code-spell-checker",
-        "marus25.cortex-debug"
-    ]
-}
