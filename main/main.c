@@ -67,11 +67,10 @@
 // ESP-Hosted (always needed for WiFi)
 #include "esp_hosted.h"
 
-// Tribomon Game Engine
-#include "tribomon_types.h"
-#include "game_engine.h"
-#include "battle_system.h"
-#include "ui_game.h"
+// Tribolonotus Pet Simulator
+#include "tribolonotus_types.h"
+#include "pet_simulator.h"
+#include "ui_pet.h"
 
 // ESP32-C6 OTA firmware - REMOVED (update already done to v2.8.5)
 
@@ -5158,33 +5157,29 @@ void app_main(void) {
     lvgl_port_add_touch(&touch_cfg);
   }
 
-  // Initialize Reptile Manager demo data
-  reptile_init_demo_data();
-
-  // Initialize Tribomon Game Engine
-  ESP_LOGI(TAG, "Initializing Tribomon Game...");
-  game_engine_init();
-  game_new("Player", 1);  // Start new game with Flamby as starter
-  ESP_LOGI(TAG, "Tribomon Game initialized!");
+  // Initialize Tribolonotus Pet Simulator
+  ESP_LOGI(TAG, "Initializing Tribolonotus Pet Simulator...");
+  pet_simulator_init();
+  ESP_LOGI(TAG, "Pet Simulator initialized!");
 
   create_ui();
 
-  // Initialize game UI
+  // Initialize pet UI
   lv_obj_t *scr = lv_scr_act();
-  ui_game_init(scr);
+  ui_pet_init(scr);
 
   backlight_set(100);
 
   ESP_LOGI(TAG, "========================================");
-  ESP_LOGI(TAG, "INIT COMPLETE - TRIBOMON READY!");
+  ESP_LOGI(TAG, "INIT COMPLETE - TRIBOLONOTUS SIMULATOR READY!");
   ESP_LOGI(TAG, "========================================");
 
   while (true) {
     update_status_bar();
 
-    // Update game state
-    game_update();
-    ui_game_update();
+    // Update pet simulator (appelé chaque seconde)
+    pet_simulator_update();
+    ui_pet_update();
 
 #if CONFIG_BT_ENABLED
     // Update BLE scan results UI when scan completes (thread-safe approach)
