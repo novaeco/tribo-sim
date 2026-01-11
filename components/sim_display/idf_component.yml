@@ -5,7 +5,6 @@ dependencies:
   lvgl/lvgl:
     version: "^9.2.0"
 
-  # ESP LCD MIPI-DSI driver for JD9165 display controller
-  # This component provides esp_lcd_mipi_dsi.h and related APIs
-  espressif/esp_lcd_dsi:
-    version: "~1.0.0"
+  # Note: esp_lcd_dsi is a built-in component in ESP-IDF v5.3+
+  # It provides esp_lcd_mipi_dsi.h and MIPI-DSI bus APIs
+  # No external dependency needed - it's part of the ESP-IDF framework
