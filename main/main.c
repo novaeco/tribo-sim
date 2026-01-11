@@ -67,9 +67,6 @@
 // ESP-Hosted (always needed for WiFi)
 #include "esp_hosted.h"
 
-// Climate Control UI
-#include "ui_climate.h"
-
 // ESP32-C6 OTA firmware - REMOVED (update already done to v2.8.5)
 
 static const char *TAG = "SMART_PANEL";
@@ -2576,82 +2573,12 @@ static void show_page(lv_obj_t *page) {
 
 static void nav_home_cb(lv_event_t *e) {
   (void)e;
-  // Hide climate pages when going home
-  extern void ui_climate_hide_all(void);
-  ui_climate_hide_all();
   navigate_to(PAGE_HOME);
-}
-
-// Function called from ui_climate.c to navigate back to HOME
-void navigate_to_home_from_climate(void) {
-  extern void ui_climate_hide_all(void);
-  ui_climate_hide_all();
-  navigate_to(PAGE_HOME);
-}
-
-// Function called from ui_climate.c to show reptile detail for a terrarium
-void show_reptile_for_terrarium(uint8_t terrarium_id) {
-  ESP_LOGI(TAG, "Showing reptile for terrarium %d", terrarium_id);
-
-  // Find the reptile that lives in this terrarium
-  int reptile_index = -1;
-  for (int i = 0; i < reptile_count; i++) {
-    if (reptiles[i].active && (reptiles[i].terrarium_id % 3) == terrarium_id) {
-      reptile_index = i;
-      break;
-    }
-  }
-
-  if (reptile_index >= 0) {
-    selected_animal_id = reptile_index;
-    navigate_to(PAGE_ANIMAL_DETAIL);
-    ESP_LOGI(TAG, "Found reptile %d (%s) for terrarium %d", reptile_index,
-             reptiles[reptile_index].name, terrarium_id);
-  } else {
-    ESP_LOGW(TAG, "No reptile found for terrarium %d", terrarium_id);
-    // Navigate to home if no reptile found
-    navigate_to(PAGE_HOME);
-  }
 }
 
 static void nav_settings_cb(lv_event_t *e) {
   (void)e;
-  extern void ui_climate_hide_all(void);
-  ui_climate_hide_all();
   navigate_to(PAGE_SETTINGS);
-}
-static void nav_climate_cb(lv_event_t *e) {
-  (void)e;
-  // Hide current page content and show climate dashboard
-  delete_all_pages();
-  extern void ui_climate_show_dashboard(void);
-  ui_climate_show_dashboard();
-}
-
-// Callback for terrarium settings button - opens terrarium-specific settings
-static void terrarium_settings_cb(lv_event_t *e) {
-  // Stop event from propagating to parent card
-  lv_event_stop_bubbling(e);
-  lv_event_stop_processing(e);
-
-  int terra_idx = (int)(intptr_t)lv_event_get_user_data(e);
-  ESP_LOGI(TAG, "Opening terrarium settings for animal index %d", terra_idx);
-
-  // Get terrarium ID from the animal's terrarium_id field
-  uint8_t terra_id = 0;
-  if (terra_idx >= 0 && terra_idx < reptile_count) {
-    terra_id = reptiles[terra_idx].terrarium_id %
-               3; // Use modulo 3 since we have 3 terrariums
-  }
-
-  // Hide all current pages
-  delete_all_pages();
-  extern void ui_climate_hide_all(void);
-  ui_climate_hide_all();
-
-  // Show terrarium settings page
-  extern void ui_climate_show_settings(uint8_t terrarium_id);
-  ui_climate_show_settings(terra_id);
 }
 
 static void brightness_cb(lv_event_t *e) {
@@ -2937,8 +2864,6 @@ static void wifi_password_toggle_cb(lv_event_t *e) {
 
 static void wifi_back_btn_cb(lv_event_t *e) {
   (void)e;
-  extern void ui_climate_hide_all(void);
-  ui_climate_hide_all();
   navigate_to(PAGE_SETTINGS);
 }
 
@@ -3352,8 +3277,6 @@ static void create_navbar(lv_obj_t *parent) {
   lv_obj_center(icon_repro);
   lv_obj_add_event_cb(btn_repro, nav_breeding_cb, LV_EVENT_CLICKED, NULL);
 
-  // Climate button removed - climate management is now on HOME page
-
   // === CENTER ===
 
   // Home button - center, larger
@@ -3480,12 +3403,6 @@ static void create_home_page(lv_obj_t *parent) {
                         LV_FLEX_ALIGN_CENTER);
   lv_obj_set_style_pad_gap(terra_grid, 10, 0);
 
-  // Climate functions
-  extern float climate_get_temperature(uint8_t id);
-  extern float climate_get_humidity(uint8_t id);
-  extern bool climate_is_heating_on(uint8_t id);
-  extern bool climate_is_uv_on(uint8_t id);
-
   // Create a card for each animal
   for (int i = 0; i < reptile_count && i < 6; i++) {
     if (!reptiles[i].active)
@@ -3526,23 +3443,6 @@ static void create_home_page(lv_obj_t *parent) {
     lv_obj_set_style_text_color(species_lbl, lv_color_hex(0x808080), 0);
     lv_obj_set_style_text_font(species_lbl, &lv_font_montserrat_10, 0);
     lv_obj_align(species_lbl, LV_ALIGN_TOP_LEFT, 30, 20);
-
-    uint8_t terra_id = reptiles[i].terrarium_id;
-    float temp = climate_get_temperature(terra_id % 3);
-    lv_obj_t *temp_lbl = lv_label_create(card);
-    lv_label_set_text_fmt(temp_lbl, LV_SYMBOL_CHARGE " %.1fC", temp);
-    lv_obj_set_style_text_font(temp_lbl, &lv_font_montserrat_18, 0);
-    lv_color_t temp_color = (temp >= 25 && temp <= 35) ? lv_color_hex(0x4CAF50)
-                                                       : lv_color_hex(0xFFEB3B);
-    lv_obj_set_style_text_color(temp_lbl, temp_color, 0);
-    lv_obj_align(temp_lbl, LV_ALIGN_LEFT_MID, 0, 15);
-
-    float hum = climate_get_humidity(terra_id % 3);
-    lv_obj_t *hum_lbl = lv_label_create(card);
-    lv_label_set_text_fmt(hum_lbl, LV_SYMBOL_REFRESH " %.0f%%", hum);
-    lv_obj_set_style_text_font(hum_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(hum_lbl, lv_color_hex(0x4CAF50), 0);
-    lv_obj_align(hum_lbl, LV_ALIGN_CENTER, 20, 15);
 
     int days = reptile_days_since_feeding(i);
     lv_obj_t *feed_lbl = lv_label_create(card);
@@ -5109,11 +5009,8 @@ static void create_ui(void) {
   // Navigate to home page (creates only that page)
   navigate_to(PAGE_HOME);
 
-  // Initialize Climate Control UI (adds climate pages)
-  ui_climate_init(scr);
-
   lvgl_port_unlock();
-  ESP_LOGI(TAG, "UI created with Climate Control");
+  ESP_LOGI(TAG, "UI created");
 }
 
 static void update_status_bar(void) {

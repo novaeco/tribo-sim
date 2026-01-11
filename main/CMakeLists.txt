@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "climate_manager.c" "ui_climate.c" "climate_presets.c"
+    SRCS "main.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_lcd
