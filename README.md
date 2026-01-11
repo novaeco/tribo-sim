@@ -32,7 +32,7 @@ Tribo-Sim est un simulateur de type "Tamagotchi" pour reptile qui permet de gér
 
 ## Prérequis
 
-- [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32p4/get-started/) v5.3 ou supérieur
+- [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32p4/get-started/) v6.1 ou supérieur
 - Python 3.8+
 - CMake 3.16+
 
@@ -153,7 +153,7 @@ Options disponibles:
 ## Dépendances
 
 - **LVGL** v9.4.0 - Bibliothèque graphique
-- **ESP-IDF** v5.3+ - Framework Espressif
+- **ESP-IDF** v6.1+ - Framework Espressif
 - **FreeRTOS** - Système temps réel (inclus dans ESP-IDF)
 
 ## Commandes Utiles

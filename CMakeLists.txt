@@ -1,9 +1,15 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.16)
 
-# This top‑level CMakeLists.txt is required by ESP‑IDF.  It
-# specifies the project name and includes the project.cmake file from
-# the ESP‑IDF build system.  All components and the main application
-# are discovered automatically in subdirectories.
-
+# The project name must match the folder name when using idf.py.
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(reptile_sim)
+
+# Workarounds for ESP-IDF v6.1-dev + GCC 15.x:
+# 1. LVGL can trigger -Werror=attributes due to IRAM section attribute conflicts
+#    when CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y.
+# 2. LVGL demos (benchmark) emit #warning which fails with -Werror.
+# 3. Bluedroid has stringop-truncation warnings in bt_types.h
+idf_build_set_property(COMPILE_OPTIONS "-Wno-error=attributes" APPEND)
+idf_build_set_property(COMPILE_OPTIONS "-Wno-error=cpp" APPEND)
+idf_build_set_property(COMPILE_OPTIONS "-Wno-error=stringop-truncation" APPEND)
+
+project(tribo_sim)
