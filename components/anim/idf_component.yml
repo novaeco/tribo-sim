@@ -1,6 +1,0 @@
-## anim component - Animation system
-
-dependencies:
-  # LVGL graphics library for animations
-  lvgl/lvgl:
-    version: "^9.2.0"

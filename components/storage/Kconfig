@@ -1,5 +1,0 @@
-menu "Storage (legacy)"
-    # Configuration for using the SD card is now defined in
-    # main/Kconfig.projbuild.  This Kconfig intentionally does not
-    # define any symbols to avoid duplicate definitions.
-endmenu
