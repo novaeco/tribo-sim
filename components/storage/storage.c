@@ -22,7 +22,11 @@ static bool s_storage_initialised = false;
 // Helper to get the path to the save file depending on whether SD is used
 static const char *get_save_path(void)
 {
-    return CONFIG_USE_SD_CARD ? "/sdcard/save.dat" : "/spiffs/save.dat";
+#ifdef CONFIG_USE_SD_CARD
+    return "/sdcard/save.dat";
+#else
+    return "/spiffs/save.dat";
+#endif
 }
 
 void storage_init(void)
