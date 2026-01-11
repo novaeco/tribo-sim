@@ -1,0 +1,18 @@
+## Tribo-Sim Component Dependencies
+## This file manages external component dependencies from the ESP Component Registry
+
+dependencies:
+  # ESP LCD MIPI-DSI driver for JD9165 display controller
+  espressif/esp_lcd_dsi:
+    version: "~1.0.0"
+
+  # Touch screen components
+  espressif/esp_lcd_touch:
+    version: "^1.2.0"
+
+  espressif/esp_lcd_touch_gt911:
+    version: "^1.2.0"
+
+  # IDF version requirement
+  idf:
+    version: ">=5.3.0"
