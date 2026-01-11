@@ -174,42 +174,57 @@ void display_init_panel(void)
     ESP_LOGI(TAG, "Initializing MIPI-DSI bus");
 
     // Initialize backlight
+    ESP_LOGI(TAG, "Step 1: Initializing backlight");
     backlight_init();
+    ESP_LOGI(TAG, "Backlight initialized");
 
     // Reset LCD via GPIO
+    ESP_LOGI(TAG, "Step 2: Configuring LCD reset GPIO %d", CONFIG_LCD_RESET_GPIO);
     gpio_config_t rst_cfg = {
         .mode = GPIO_MODE_OUTPUT,
         .pin_bit_mask = 1ULL << CONFIG_LCD_RESET_GPIO
     };
     gpio_config(&rst_cfg);
+    ESP_LOGI(TAG, "GPIO configured, performing reset sequence");
     gpio_set_level(CONFIG_LCD_RESET_GPIO, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(CONFIG_LCD_RESET_GPIO, 1);
     vTaskDelay(pdMS_TO_TICKS(50));
+    ESP_LOGI(TAG, "LCD reset complete");
 
     // Create MIPI-DSI bus
+    ESP_LOGI(TAG, "Step 3: Creating MIPI-DSI bus (lanes=%d, bitrate=%d Mbps)",
+             MIPI_DSI_LANE_NUM, MIPI_DSI_LANE_BITRATE_MBPS);
     esp_lcd_dsi_bus_config_t bus_config = {
         .bus_id = 0,
         .num_data_lanes = MIPI_DSI_LANE_NUM,
         .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
         .lane_bit_rate_mbps = MIPI_DSI_LANE_BITRATE_MBPS,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_dsi_bus(&bus_config, &dsi_bus));
+    esp_err_t ret = esp_lcd_new_dsi_bus(&bus_config, &dsi_bus);
+    ESP_LOGI(TAG, "MIPI-DSI bus creation result: %s (0x%x)", esp_err_to_name(ret), ret);
+    ESP_ERROR_CHECK(ret);
 
     // Create DBI IO for sending commands
+    ESP_LOGI(TAG, "Step 4: Creating DBI IO interface");
     esp_lcd_panel_io_handle_t io_handle = NULL;
     esp_lcd_dbi_io_config_t dbi_config = {
         .virtual_channel = 0,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_dbi(dsi_bus, &dbi_config, &io_handle));
+    ret = esp_lcd_new_panel_io_dbi(dsi_bus, &dbi_config, &io_handle);
+    ESP_LOGI(TAG, "DBI IO creation result: %s (0x%x)", esp_err_to_name(ret), ret);
+    ESP_ERROR_CHECK(ret);
 
     // Send JD9165 initialization commands
-    ESP_LOGI(TAG, "Sending JD9165 init commands");
+    ESP_LOGI(TAG, "Step 5: Sending JD9165 init commands");
     jd9165_send_init_cmds(io_handle);
+    ESP_LOGI(TAG, "JD9165 init commands sent");
 
     // Create DPI panel for video stream
+    ESP_LOGI(TAG, "Step 6: Creating DPI panel (%dx%d @ %d MHz)",
+             LCD_H_RES, LCD_V_RES, JD9165_PCLK_MHZ);
     esp_lcd_dpi_panel_config_t dpi_config = {
         .virtual_channel = 0,
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
@@ -226,10 +241,17 @@ void display_init_panel(void)
             .vsync_front_porch = JD9165_VFP,
         },
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_dpi(dsi_bus, &dpi_config, &lcd_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_init(lcd_panel));
+    ret = esp_lcd_new_panel_dpi(dsi_bus, &dpi_config, &lcd_panel);
+    ESP_LOGI(TAG, "DPI panel creation result: %s (0x%x)", esp_err_to_name(ret), ret);
+    ESP_ERROR_CHECK(ret);
+
+    ESP_LOGI(TAG, "Step 7: Initializing LCD panel");
+    ret = esp_lcd_panel_init(lcd_panel);
+    ESP_LOGI(TAG, "LCD panel init result: %s (0x%x)", esp_err_to_name(ret), ret);
+    ESP_ERROR_CHECK(ret);
 
     // Turn on backlight
+    ESP_LOGI(TAG, "Step 8: Turning on backlight");
     backlight_set(100);
     ESP_LOGI(TAG, "Display initialized successfully");
 }
