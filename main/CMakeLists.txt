@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c"
+    SRCS "main.c" "game_engine.c" "battle_system.c" "ui_game.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_lcd
