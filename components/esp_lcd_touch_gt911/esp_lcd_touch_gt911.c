@@ -198,13 +198,13 @@ esp_err_t esp_lcd_touch_read_data(esp_lcd_touch_handle_t tp)
 // Public API: return the last read coordinates.  If a touch event was
 // detected by esp_lcd_touch_read_data(), return true and set x, y
 // accordingly.  Otherwise return false.  Only single touch is
-// supported; strength and touch_num parameters may be NULL.
+// supported; strength and point_num parameters may be NULL.
 bool esp_lcd_touch_get_coordinates(esp_lcd_touch_handle_t tp,
                                    uint16_t *x,
                                    uint16_t *y,
-                                   uint8_t *strength,
-                                   uint8_t *touch_num,
-                                   uint16_t max_points)
+                                   uint16_t *strength,
+                                   uint8_t *point_num,
+                                   uint8_t max_point_num)
 {
     if (!tp) {
         return false;
@@ -220,15 +220,15 @@ bool esp_lcd_touch_get_coordinates(esp_lcd_touch_handle_t tp,
         if (strength) {
             *strength = 0;
         }
-        if (touch_num) {
-            *touch_num = 1;
+        if (point_num) {
+            *point_num = 1;
         }
         // Mark the touch as consumed; subsequent calls return false
         dev->touched = false;
         return true;
     } else {
-        if (touch_num) {
-            *touch_num = 0;
+        if (point_num) {
+            *point_num = 0;
         }
         return false;
     }
