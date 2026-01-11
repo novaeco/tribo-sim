@@ -20,6 +20,7 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_mipi_dsi.h"
+#include "esp_ldo_regulator.h"
 #include "lvgl.h"
 #include "sim_display.h"
 #include "game.h"
@@ -192,13 +193,26 @@ void display_init_panel(void)
     vTaskDelay(pdMS_TO_TICKS(50));
     ESP_LOGI(TAG, "LCD reset complete");
 
-    // Create MIPI-DSI bus
-    ESP_LOGI(TAG, "Step 3: Creating MIPI-DSI bus (lanes=%d, bitrate=%d Mbps)",
-             MIPI_DSI_LANE_NUM, MIPI_DSI_LANE_BITRATE_MBPS);
+    // Step 3: Configure LDO for MIPI DPHY power supply
+    // CRITICAL: This MUST be done before calling esp_lcd_new_dsi_bus()
+    // The MIPI DPHY requires a stable 2.5V power supply via LDO channel 3
+    ESP_LOGI(TAG, "Step 3: Configuring LDO channel 3 for MIPI DPHY (2.5V)");
+    esp_ldo_channel_handle_t ldo_mipi_phy = NULL;
+    esp_ldo_channel_config_t ldo_mipi_phy_config = {
+        .chan_id = 3,           // LDO_VO3 for MIPI DPHY
+        .voltage_mv = 2500,     // 2.5V required for MIPI DPHY
+    };
+    esp_err_t ret = esp_ldo_acquire_channel(&ldo_mipi_phy_config, &ldo_mipi_phy);
+    ESP_LOGI(TAG, "LDO configuration result: %s (0x%x)", esp_err_to_name(ret), ret);
+    ESP_ERROR_CHECK(ret);
+    ESP_LOGI(TAG, "MIPI DPHY power supply configured successfully");
 
-    // Add delay before bus creation to allow clocks to stabilize
-    vTaskDelay(pdMS_TO_TICKS(100));
-    ESP_LOGI(TAG, "Clocks stabilized, proceeding with bus creation");
+    // Add delay to allow LDO voltage to stabilize
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    // Create MIPI-DSI bus
+    ESP_LOGI(TAG, "Step 4: Creating MIPI-DSI bus (lanes=%d, bitrate=%d Mbps)",
+             MIPI_DSI_LANE_NUM, MIPI_DSI_LANE_BITRATE_MBPS);
 
     esp_lcd_dsi_bus_config_t bus_config = {
         .bus_id = 0,
@@ -207,12 +221,12 @@ void display_init_panel(void)
         .lane_bit_rate_mbps = MIPI_DSI_LANE_BITRATE_MBPS,
     };
     ESP_LOGI(TAG, "Calling esp_lcd_new_dsi_bus()...");
-    esp_err_t ret = esp_lcd_new_dsi_bus(&bus_config, &dsi_bus);
+    ret = esp_lcd_new_dsi_bus(&bus_config, &dsi_bus);
     ESP_LOGI(TAG, "MIPI-DSI bus creation result: %s (0x%x)", esp_err_to_name(ret), ret);
     ESP_ERROR_CHECK(ret);
 
     // Create DBI IO for sending commands
-    ESP_LOGI(TAG, "Step 4: Creating DBI IO interface");
+    ESP_LOGI(TAG, "Step 5: Creating DBI IO interface");
     esp_lcd_panel_io_handle_t io_handle = NULL;
     esp_lcd_dbi_io_config_t dbi_config = {
         .virtual_channel = 0,
@@ -224,12 +238,12 @@ void display_init_panel(void)
     ESP_ERROR_CHECK(ret);
 
     // Send JD9165 initialization commands
-    ESP_LOGI(TAG, "Step 5: Sending JD9165 init commands");
+    ESP_LOGI(TAG, "Step 6: Sending JD9165 init commands");
     jd9165_send_init_cmds(io_handle);
     ESP_LOGI(TAG, "JD9165 init commands sent");
 
     // Create DPI panel for video stream
-    ESP_LOGI(TAG, "Step 6: Creating DPI panel (%dx%d @ %d MHz)",
+    ESP_LOGI(TAG, "Step 7: Creating DPI panel (%dx%d @ %d MHz)",
              LCD_H_RES, LCD_V_RES, JD9165_PCLK_MHZ);
     esp_lcd_dpi_panel_config_t dpi_config = {
         .virtual_channel = 0,
@@ -251,13 +265,13 @@ void display_init_panel(void)
     ESP_LOGI(TAG, "DPI panel creation result: %s (0x%x)", esp_err_to_name(ret), ret);
     ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI(TAG, "Step 7: Initializing LCD panel");
+    ESP_LOGI(TAG, "Step 8: Initializing LCD panel");
     ret = esp_lcd_panel_init(lcd_panel);
     ESP_LOGI(TAG, "LCD panel init result: %s (0x%x)", esp_err_to_name(ret), ret);
     ESP_ERROR_CHECK(ret);
 
     // Turn on backlight
-    ESP_LOGI(TAG, "Step 8: Turning on backlight");
+    ESP_LOGI(TAG, "Step 9: Turning on backlight");
     backlight_set(100);
     ESP_LOGI(TAG, "Display initialized successfully");
 }
