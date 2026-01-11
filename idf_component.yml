@@ -1,18 +1,25 @@
-## Tribo-Sim Component Dependencies
-## This file manages external component dependencies from the ESP Component Registry
+## Tribo-Sim Root Component Dependencies
+## This file centralizes all external dependencies from the ESP Component Registry
+## Individual components also declare their own dependencies in their respective idf_component.yml files
 
 dependencies:
+  # LVGL graphics library v9.x (used by multiple components)
+  lvgl/lvgl:
+    version: "^9.2.0"
+
   # ESP LCD MIPI-DSI driver for JD9165 display controller
+  # Required by components/sim_display
   espressif/esp_lcd_dsi:
     version: "~1.0.0"
 
-  # Touch screen components
+  # Touch screen components for GT911 controller
+  # Required by components/input
   espressif/esp_lcd_touch:
     version: "^1.2.0"
 
   espressif/esp_lcd_touch_gt911:
     version: "^1.2.0"
 
-  # IDF version requirement
+  # ESP-IDF version requirement
   idf:
     version: ">=5.3.0"

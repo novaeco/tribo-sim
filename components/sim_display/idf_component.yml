@@ -4,3 +4,8 @@ dependencies:
   # LVGL graphics library from component registry
   lvgl/lvgl:
     version: "^9.2.0"
+
+  # ESP LCD MIPI-DSI driver for JD9165 display controller
+  # This component provides esp_lcd_mipi_dsi.h and related APIs
+  espressif/esp_lcd_dsi:
+    version: "~1.0.0"
