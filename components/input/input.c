@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_lcd_panel_io.h"
+#include "esp_lcd_touch.h"
 #include "esp_lcd_touch_gt911.h"
 #include "lvgl.h"
 
@@ -132,15 +133,16 @@ void sensor_task(void *arg)
         // Poll the GT911 for new data
         esp_lcd_touch_read_data(touch_handle);
 
-        // Get touch data using new API
-        uint16_t touch_x[1], touch_y[1];
+        // Get touch data using ESP-IDF 6.x API
+        esp_lcd_touch_point_data_t touch_points[1];
         uint8_t touch_count = 0;
-        bool pressed = esp_lcd_touch_get_data(touch_handle, touch_x, touch_y, NULL, &touch_count, 1);
+        esp_err_t ret = esp_lcd_touch_get_data(touch_handle, touch_points, &touch_count, 1);
+        bool pressed = (ret == ESP_OK && touch_count > 0);
 
         if (xSemaphoreTake(touch_mutex, portMAX_DELAY) == pdTRUE) {
             if (pressed && touch_count > 0) {
-                s_touch_x = touch_x[0];
-                s_touch_y = touch_y[0];
+                s_touch_x = touch_points[0].x;
+                s_touch_y = touch_points[0].y;
                 s_touch_pressed = true;
             } else {
                 s_touch_pressed = false;
