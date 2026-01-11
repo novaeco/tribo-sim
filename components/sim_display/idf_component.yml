@@ -1,0 +1,6 @@
+## sim_display component - Display driver and LVGL integration
+
+dependencies:
+  # LVGL graphics library from component registry
+  lvgl/lvgl:
+    version: "^9.2.0"
