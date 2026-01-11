@@ -7,10 +7,7 @@ dependencies:
   lvgl/lvgl:
     version: "^9.2.0"
 
-  # ESP LCD MIPI-DSI driver for JD9165 display controller
-  # Required by components/sim_display
-  espressif/esp_lcd_dsi:
-    version: "~1.0.0"
+  # Note: MIPI-DSI support is built-in to ESP-IDF via esp_lcd component (no external dependency needed)
 
   # Touch screen components for GT911 controller
   # Required by components/input
