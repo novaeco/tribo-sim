@@ -1,0 +1,6 @@
+## Game component - Core game logic
+
+dependencies:
+  # LVGL graphics library (used through sim_display.h)
+  lvgl/lvgl:
+    version: "^9.2.0"
