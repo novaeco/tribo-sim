@@ -1,9 +1,0 @@
-menu "Storage"
-    # Select whether to use an SD card (FAT filesystem) instead of
-    # the internal SPIFFS partition for saving game state.  When
-    # enabled, the system attempts to mount the SD card during
-    # storage_init().  If mounting fails it falls back to SPIFFS.
-    config USE_SD_CARD
-        bool "Utiliser carte SD (FAT) au lieu de SPIFFS interne"
-        default n
-endmenu
