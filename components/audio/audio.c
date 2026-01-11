@@ -5,8 +5,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "esp_driver_ledc.h"
-#include "esp_driver_gpio.h"
+#include "driver/ledc.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "audio.h"
 
