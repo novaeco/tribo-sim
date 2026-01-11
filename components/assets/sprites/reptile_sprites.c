@@ -3,6 +3,7 @@
 // Each sprite is 64x48 pixels
 
 #include "lvgl.h"
+#include "sprites.h"
 
 // Color definitions (RGB565)
 #define C_TRANS   0x0000  // Transparent (will use color key)
