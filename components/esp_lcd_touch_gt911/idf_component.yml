@@ -1,8 +1,6 @@
 ## Custom GT911 touch controller driver
-## Depends on ESP LCD touch base component
+## Self-contained implementation without external dependencies
 
 dependencies:
-  espressif/esp_lcd_touch:
-    version: "^1.1.0"
   idf:
     version: ">=5.3.0"
