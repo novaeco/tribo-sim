@@ -14,6 +14,9 @@ extern ReptileState g_state;
 // Flag indicating whether the game is paused
 extern bool game_paused;
 
+// Flag indicating whether the game has started
+extern bool game_started;
+
 // Initialise the game logic subsystem
 void game_init(void);
 

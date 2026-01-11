@@ -23,6 +23,9 @@ ReptileState g_state;
 // Indicates whether the game logic is currently paused
 bool game_paused = false;
 
+// Indicates whether the game has started
+bool game_started = false;
+
 // FreeRTOS queue to hold incoming events from the UI
 static QueueHandle_t s_event_queue;
 

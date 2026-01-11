@@ -214,7 +214,6 @@ void display_init_panel(void)
         .virtual_channel = 0,
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = JD9165_PCLK_MHZ,
-        .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
         .num_fbs = LCD_NUM_FB,
         .video_timing = {
             .h_size = LCD_H_RES,
@@ -226,7 +225,6 @@ void display_init_panel(void)
             .vsync_pulse_width = JD9165_VSYNC,
             .vsync_front_porch = JD9165_VFP,
         },
-        .flags.use_dma2d = true,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_dpi(dsi_bus, &dpi_config, &lcd_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(lcd_panel));
@@ -339,7 +337,7 @@ void create_ui(void)
     // Title
     lv_obj_t *title = lv_label_create(screen_home);
     lv_label_set_text(title, "Terrarium Reptile");
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(0x4CAF50), 0);
     lv_obj_align(title, LV_ALIGN_CENTER, 0, -80);
 
@@ -386,7 +384,7 @@ void create_ui(void)
     lv_obj_t *stats_title = lv_label_create(stats_panel);
     lv_label_set_text(stats_title, "Statistiques");
     lv_obj_set_style_text_color(stats_title, lv_color_hex(0x4CAF50), 0);
-    lv_obj_set_style_text_font(stats_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(stats_title, &lv_font_montserrat_14, 0);
     lv_obj_align(stats_title, LV_ALIGN_TOP_MID, 0, 5);
 
     // Health bar (green)
