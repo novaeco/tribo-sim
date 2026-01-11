@@ -1,0 +1,39 @@
+# ESP-IDF Build Artifacts
+build/
+sdkconfig
+sdkconfig.old
+
+# Managed components (downloaded by idf.py)
+managed_components/
+
+# Dependencies lock (optional - can be version-controlled for reproducibility)
+# dependencies.lock
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.Python
+*.egg-info/
+
+# Logs
+*.log
+
+# Debug files
+*.dmp
+
+# Backup files
+*.bak
+*_backup.c
+*_backup.h
