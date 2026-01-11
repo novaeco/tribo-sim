@@ -1,0 +1,17 @@
+version: "0.1.0"
+
+# Declare external component dependencies so that ESP‑IDF can fetch
+# them automatically when running `idf.py add-dependency` or when
+# building the project.  These versions should be compatible with
+# ESP‑IDF v6.x and LVGL v8.x.
+
+dependencies:
+  # Note: The JD9165 panel driver and GT911 touch driver are part of
+  # ESP‑IDF's built‑in esp_lcd component starting from v5.3.  To avoid
+  # external component resolution issues on some platforms, we only
+  # list LVGL here.  The custom GT911 driver is provided locally in
+  # this project under components/esp_lcd_touch_gt911.
+  #
+  # LVGL graphics library.  Version 9.4.0 is the latest stable
+  # release at the time of writing【740980510896923†L509-L514】
+  lvgl/lvgl: "^9.4.0"

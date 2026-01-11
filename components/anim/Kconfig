@@ -1,0 +1,4 @@
+# Animation configuration (currently empty)
+menu "Animation"
+    # Placeholder for future animation configuration
+endmenu

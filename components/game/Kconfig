@@ -1,0 +1,12 @@
+menu "Game Tuning"
+
+config GAME_TICK_MS
+    int "Intervalle de mise à jour de la logique de jeu (ms)"
+    default 1000
+    range 100 5000
+    help
+        Temps en millisecondes entre deux mises à jour de la logique de
+        simulation.  Diminuez cette valeur pour une simulation plus
+        rapide ou augmentez‑la pour réduire la charge CPU.
+
+endmenu
