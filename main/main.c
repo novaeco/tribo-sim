@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "sdkconfig.h"
 #include <stdbool.h>
 
 // TIER 1: BSP
@@ -113,6 +114,27 @@ static void ui_update_task(void *arg)
             lv_label_set_text(g_label_stats, stats_buf);
             lvgl_port_unlock();
         }
+
+        vTaskDelayUntil(&last_wake, period);
+    }
+}
+
+/**
+ * @brief LVGL Handler Task (fallback)
+ * Ensures LVGL timers/flush run even if the port task is not started.
+ */
+static void lvgl_fallback_task(void *arg)
+{
+    ESP_LOGI(TAG, "LVGL fallback handler task started");
+
+    TickType_t last_wake = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(5);
+
+    while (1) {
+        lvgl_port_lock(0);
+        lv_tick_inc(5);
+        lv_timer_handler();
+        lvgl_port_unlock();
 
         vTaskDelayUntil(&last_wake, period);
     }
@@ -229,6 +251,8 @@ void app_main(void)
 
     xTaskCreate(simulation_task, "sim_task", 8192, NULL, 5, NULL);
     xTaskCreate(ui_update_task, "ui_task", 4096, NULL, 4, NULL);
+    xTaskCreate(lvgl_fallback_task, "lvgl_fallback", 4096, NULL,
+                CONFIG_APP_LVGL_TASK_PRIORITY, NULL);
 
     ESP_LOGI(TAG, "===================================");
     ESP_LOGI(TAG, "  SYSTEM READY");
