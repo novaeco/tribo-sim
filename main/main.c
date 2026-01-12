@@ -404,11 +404,11 @@ typedef enum {
   SPECIES_OTHER
 } reptile_species_t;
 
-// Animal sex
-typedef enum { SEX_UNKNOWN = 0, SEX_MALE, SEX_FEMALE } reptile_sex_t;
+// Animal sex (using sex_t from tribolonotus_types.h to avoid conflict)
+// typedef removed - using sex_t from tribolonotus_types.h
 
-// Health status
-typedef enum { HEALTH_GOOD = 0, HEALTH_ATTENTION, HEALTH_SICK } reptile_health_status_t;
+// Health status (renamed to avoid conflict with tribolonotus_types.h)
+typedef enum { REPTILE_HEALTH_GOOD = 0, REPTILE_HEALTH_ATTENTION, REPTILE_HEALTH_SICK } reptile_health_status_t;
 // CITES Annex classification (Règlement UE 338/97)
 typedef enum {
   CITES_NOT_LISTED = 0, // Non concerné
@@ -440,7 +440,7 @@ typedef struct {
   char species_scientific[64]; // Nom latin (ex: "Python regius")
   char morph[32];              // Phase/mutation (ex: "Pastel Banana")
   reptile_species_t species;
-  reptile_sex_t sex;
+  sex_t sex;
 
   // === Identification individuelle ===
   char microchip[20];   // N° puce ISO 11784/11785 (15 digits)
@@ -4081,7 +4081,7 @@ static void reptile_init_demo_data(void) {
                   .terrarium_id = 5,
                   .purchase_price = 350,
                   .last_feeding = time(NULL) - (7 * 24 * 3600), // 7 days ago
-                  .health = HEALTH_GOOD,
+                  .health = REPTILE_HEALTH_GOOD,
                   .is_breeding = true,
                   .active = true};
   snprintf(reptiles[0].notes, sizeof(reptiles[0].notes),
@@ -4101,7 +4101,7 @@ static void reptile_init_demo_data(void) {
                   .terrarium_id = 2,
                   .purchase_price = 200,
                   .last_feeding = time(NULL) - (14 * 24 * 3600), // 14 days ago
-                  .health = HEALTH_GOOD,
+                  .health = REPTILE_HEALTH_GOOD,
                   .is_breeding = false,
                   .active = true};
 
@@ -4118,7 +4118,7 @@ static void reptile_init_demo_data(void) {
                             .terrarium_id = 6,
                             .purchase_price = 150,
                             .last_feeding = time(NULL) - (10 * 24 * 3600),
-                            .health = HEALTH_GOOD,
+                            .health = REPTILE_HEALTH_GOOD,
                             .is_breeding = true,
                             .active = true};
 
@@ -4136,7 +4136,7 @@ static void reptile_init_demo_data(void) {
                             .terrarium_id = 8,
                             .purchase_price = 80,
                             .last_feeding = time(NULL) - (3 * 24 * 3600),
-                            .health = HEALTH_GOOD,
+                            .health = REPTILE_HEALTH_GOOD,
                             .is_breeding = false,
                             .active = true};
 
@@ -4153,7 +4153,7 @@ static void reptile_init_demo_data(void) {
                             .terrarium_id = 3,
                             .purchase_price = 120,
                             .last_feeding = time(NULL) - (1 * 24 * 3600),
-                            .health = HEALTH_GOOD,
+                            .health = REPTILE_HEALTH_GOOD,
                             .is_breeding = false,
                             .active = true};
 
@@ -4171,7 +4171,7 @@ static void reptile_init_demo_data(void) {
                             .terrarium_id = 10,
                             .purchase_price = 180,
                             .last_feeding = time(NULL) - (1 * 24 * 3600),
-                            .health = HEALTH_GOOD,
+                            .health = REPTILE_HEALTH_GOOD,
                             .is_breeding = false,
                             .active = true};
 
@@ -4263,7 +4263,7 @@ static const char *reptile_get_icon(reptile_species_t species) {
 }
 
 // Get sex symbol
-static const char *reptile_get_sex_symbol(reptile_sex_t sex) {
+static const char *reptile_get_sex_symbol(sex_t sex) {
   switch (sex) {
   case SEX_MALE:
     return "♂";
