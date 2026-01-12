@@ -160,6 +160,15 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     // ====================================================================================
+    // Initialize LVGL Port
+    // ====================================================================================
+
+    ESP_LOGI(TAG, "Initializing LVGL port...");
+
+    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+
+    // ====================================================================================
     // TIER 1: Initialize BSP (Hardware)
     // ====================================================================================
 
@@ -169,23 +178,10 @@ void app_main(void)
     ESP_ERROR_CHECK(bsp_display_init(&g_lvgl_display));
 
     // Touch
-    ESP_ERROR_CHECK(bsp_touch_init(&g_lvgl_indev));
+    ESP_ERROR_CHECK(bsp_touch_init(&g_lvgl_indev, g_lvgl_display));
 
     // SD Card (optional)
     bsp_sdcard_mount(); // Non-critical
-
-    // ====================================================================================
-    // Initialize LVGL Port
-    // ====================================================================================
-
-    ESP_LOGI(TAG, "Initializing LVGL port...");
-
-    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
-
-    // TODO: Create LVGL display from BSP
-    // For now, we'll use a placeholder
-    ESP_LOGW(TAG, "LVGL display creation pending full integration");
 
     // ====================================================================================
     // TIER 2: Initialize Simulation Core (C++)

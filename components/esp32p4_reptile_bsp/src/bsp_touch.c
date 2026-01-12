@@ -7,13 +7,19 @@
 #include "esp_log.h"
 #include "esp_lcd_touch.h"
 #include "esp_lcd_touch_gt911.h"
+#include "esp_lvgl_port_touch.h"
 #include "driver/i2c_master.h"
 
 static const char *TAG = "BSP_TOUCH";
 
-esp_err_t bsp_touch_init(lv_indev_t **indev)
+esp_err_t bsp_touch_init(lv_indev_t **indev, lv_display_t *disp)
 {
     ESP_LOGI(TAG, "Initializing GT911 touch controller");
+
+    if (disp == NULL) {
+        ESP_LOGE(TAG, "LVGL display handle is NULL; call lvgl_port_init and bsp_display_init first");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     // Step 1: I2C Bus Configuration
     i2c_master_bus_config_t i2c_bus_cfg = {
@@ -57,9 +63,20 @@ esp_err_t bsp_touch_init(lv_indev_t **indev)
 
     // Step 4: Create LVGL Input Device (if requested)
     if (indev) {
-        // TODO: Register with LVGL
-        *indev = NULL; // Placeholder
-        ESP_LOGI(TAG, "LVGL input device creation pending");
+        const lvgl_port_touch_cfg_t touch_cfg = {
+            .disp = disp,
+            .handle = touch_handle,
+            .scale = {
+                .x = 1.0f,
+                .y = 1.0f,
+            },
+        };
+        *indev = lvgl_port_add_touch(&touch_cfg);
+        if (*indev == NULL) {
+            ESP_LOGE(TAG, "Failed to register LVGL touch input");
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "LVGL touch input registered");
     }
 
     return ESP_OK;

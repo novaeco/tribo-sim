@@ -16,6 +16,7 @@
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_st7701.h"
+#include "esp_lvgl_port_disp.h"
 #include "esp_ldo_regulator.h"
 #include "driver/gpio.h"
 
@@ -113,9 +114,44 @@ esp_err_t bsp_display_init(lv_display_t **disp)
 
     // Step 9: Create LVGL Display (if requested)
     if (disp) {
-        // TODO: Initialize LVGL port here with g_lcd_panel
-        *disp = NULL; // Placeholder for now
-        ESP_LOGW(TAG, "LVGL display creation not yet implemented");
+        const lvgl_port_display_cfg_t disp_cfg = {
+            .io_handle = NULL,
+            .panel_handle = g_lcd_panel,
+            .control_handle = g_lcd_ctrl_panel,
+            .buffer_size = BSP_LCD_H_RES * BSP_LCD_V_RES,
+            .double_buffer = true,
+            .trans_size = 0,
+            .hres = BSP_LCD_H_RES,
+            .vres = BSP_LCD_V_RES,
+            .monochrome = false,
+            .rotation = {
+                .swap_xy = false,
+                .mirror_x = false,
+                .mirror_y = false,
+            },
+            .rounder_cb = NULL,
+            .color_format = LV_COLOR_FORMAT_RGB565,
+            .flags = {
+                .buff_dma = false,
+                .buff_spiram = true,
+                .sw_rotate = false,
+                .swap_bytes = false,
+                .full_refresh = false,
+                .direct_mode = false,
+            },
+        };
+        const lvgl_port_display_dsi_cfg_t dsi_cfg = {
+            .flags = {
+                .avoid_tearing = true,
+            },
+        };
+
+        *disp = lvgl_port_add_disp_dsi(&disp_cfg, &dsi_cfg);
+        if (*disp == NULL) {
+            ESP_LOGE(TAG, "Failed to register LVGL display");
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "LVGL display registered");
     }
 
     ESP_LOGI(TAG, "Display initialization complete");

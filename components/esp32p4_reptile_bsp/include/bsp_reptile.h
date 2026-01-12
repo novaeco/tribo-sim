@@ -60,9 +60,10 @@ esp_err_t bsp_display_init(lv_display_t **disp);
 /**
  * @brief Initialize GT911 touch controller and create LVGL input device
  * @param[out] indev Pointer to store LVGL input device handle
+ * @param[in] disp LVGL display handle to attach touch input
  * @return ESP_OK on success
  */
-esp_err_t bsp_touch_init(lv_indev_t **indev);
+esp_err_t bsp_touch_init(lv_indev_t **indev, lv_display_t *disp);
 
 /**
  * @brief Mount SD card via SDMMC interface
