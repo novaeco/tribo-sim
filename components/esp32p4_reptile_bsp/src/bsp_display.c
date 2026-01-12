@@ -7,7 +7,7 @@
  * - Resolution: 1024x600
  * - DSI Lanes: 2
  * - Bitrate: 800 Mbps per lane
- * - DPI Clock: 52 MHz
+ * - DPI Clock: 51.2 MHz (rounded in firmware)
  * - Pixel Format: RGB565
  */
 
@@ -30,7 +30,7 @@ static const char *TAG = "BSP_DISPLAY";
 
 #define DSI_LANE_NUM            2
 #define DSI_LANE_BITRATE_MBPS   800
-#define DPI_CLOCK_MHZ           52
+#define DPI_CLOCK_MHZ           51
 #define DSI_PHY_LDO_CHANNEL     3
 #define DSI_PHY_VOLTAGE_MV      2500
 
@@ -98,6 +98,7 @@ esp_err_t bsp_display_init(lv_display_t **disp)
     ESP_LOGI(TAG, "DSI bus created (%d lanes @ %d Mbps)", DSI_LANE_NUM, DSI_LANE_BITRATE_MBPS);
 
     // Step 3: DPI Panel Configuration (ESP-IDF 6.1 API)
+    // Timings per vendor JD9165BA 1024x600 2-lane MIPI DSI table.
     esp_lcd_dpi_panel_config_t dpi_config = {
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = DPI_CLOCK_MHZ,
@@ -106,11 +107,11 @@ esp_err_t bsp_display_init(lv_display_t **disp)
         .video_timing = {
             .h_size = BSP_LCD_H_RES,
             .v_size = BSP_LCD_V_RES,
-            .hsync_back_porch = 160,
-            .hsync_pulse_width = 10,
+            .hsync_back_porch = 136,
+            .hsync_pulse_width = 24,
             .hsync_front_porch = 160,
-            .vsync_back_porch = 23,
-            .vsync_pulse_width = 10,
+            .vsync_back_porch = 21,
+            .vsync_pulse_width = 2,
             .vsync_front_porch = 12,
         },
     };
