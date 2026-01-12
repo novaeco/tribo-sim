@@ -154,7 +154,7 @@ void ui_pet_init(lv_obj_t *parent_screen) {
     ESP_LOGI(TAG, "Initialisation interface Tribolonotus Enhanced");
 
     g_main_screen = lv_obj_create(parent_screen);
-    lv_obj_set_size(g_main_screen, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_size(g_main_screen, lv_display_get_horizontal_resolution(NULL), lv_display_get_vertical_resolution(NULL));
     lv_obj_set_style_bg_color(g_main_screen, lv_color_hex(0x0a0a0a), 0);
 
     // ===== CADRE PRINCIPAL LÉZARD =====
@@ -671,7 +671,12 @@ void ui_pet_show_new_pet_menu(void) {
 }
 
 void ui_pet_show_message(const char *title, const char *message) {
-    lv_obj_t *mbox = lv_msgbox_create(NULL, title, message, NULL, true);
+    // Create message box using LVGL v9 API
+    lv_obj_t *mbox = lv_msgbox_create(lv_screen_active());
+    lv_msgbox_add_title(mbox, title);
+    lv_msgbox_add_text(mbox, message);
+    lv_msgbox_add_close_button(mbox);
+
     lv_obj_center(mbox);
     lv_obj_set_style_bg_color(mbox, lv_color_hex(0x2a2a3e), 0);
 
