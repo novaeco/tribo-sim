@@ -79,6 +79,12 @@ pet_t *pet_get_current(void);
 void pet_set_current(uint8_t pet_index);
 
 /**
+ * @brief Obtient l'index du lézard actuellement sélectionné
+ * @return Index du lézard courant
+ */
+uint8_t pet_get_current_index(void);
+
+/**
  * @brief Obtient le nombre de lézards vivants
  * @return Nombre de lézards
  */
