@@ -2419,7 +2419,7 @@ static page_id_t current_page = PAGE_HOME;
 // Delete all content pages (keeps status bar and navbar)
 static void delete_all_pages(void) {
   if (page_home) {
-    lv_obj_del(page_home);
+    lv_obj_delete(page_home);
     page_home = NULL;
     dashboard_snake_count = NULL;
     dashboard_lizard_count = NULL;
@@ -2427,11 +2427,11 @@ static void delete_all_pages(void) {
     dashboard_alerts_label = NULL;
   }
   if (page_settings) {
-    lv_obj_del(page_settings);
+    lv_obj_delete(page_settings);
     page_settings = NULL;
   }
   if (page_wifi) {
-    lv_obj_del(page_wifi);
+    lv_obj_delete(page_wifi);
     page_wifi = NULL;
     wifi_list = NULL;
     wifi_keyboard = NULL;
@@ -2441,41 +2441,41 @@ static void delete_all_pages(void) {
     wifi_pwd_container = NULL;
   }
   if (page_bluetooth) {
-    lv_obj_del(page_bluetooth);
+    lv_obj_delete(page_bluetooth);
     page_bluetooth = NULL;
     bt_list = NULL;
     bt_status_label = NULL;
     bt_device_label = NULL;
   }
   if (page_gallery) {
-    lv_obj_del(page_gallery);
+    lv_obj_delete(page_gallery);
     page_gallery = NULL;
     gallery_image = NULL;
     gallery_filename_label = NULL;
     gallery_index_label = NULL;
   }
   if (page_animals) {
-    lv_obj_del(page_animals);
+    lv_obj_delete(page_animals);
     page_animals = NULL;
     animal_list = NULL;
   }
   if (page_animal_detail) {
-    lv_obj_del(page_animal_detail);
+    lv_obj_delete(page_animal_detail);
     page_animal_detail = NULL;
     detail_name_label = NULL;
     detail_info_label = NULL;
   }
   if (page_breeding) {
-    lv_obj_del(page_breeding);
+    lv_obj_delete(page_breeding);
     page_breeding = NULL;
   }
   // Note: page_calendar might not exist
   if (page_calendar) {
-    lv_obj_del(page_calendar);
+    lv_obj_delete(page_calendar);
     page_calendar = NULL;
   }
   if (page_conformity) {
-    lv_obj_del(page_conformity);
+    lv_obj_delete(page_conformity);
     page_conformity = NULL;
     conformity_status_label = NULL;
   }
@@ -2484,7 +2484,7 @@ static void delete_all_pages(void) {
 static void navigate_to(page_id_t target_page) {
   ESP_LOGI(TAG, "navigate_to: %d -> %d", current_page, target_page);
 
-  lv_obj_t *scr = lv_scr_act();
+  lv_obj_t *scr = lv_screen_active();
 
   // Delete all existing content pages
   delete_all_pages();
@@ -2661,7 +2661,7 @@ static void update_wifi_list(void) {
       continue;
 
     // Create button manually (not using lv_list)
-    lv_obj_t *btn = lv_btn_create(wifi_list);
+    lv_obj_t *btn = lv_button_create(wifi_list);
     lv_obj_set_size(btn, lv_pct(100), 40);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x1565C0), 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x42A5F5), LV_STATE_PRESSED);
@@ -2718,7 +2718,7 @@ static void wifi_scan_btn_cb(lv_event_t *e) {
         continue;
 
       // Create button manually (not using lv_list)
-      lv_obj_t *btn = lv_btn_create(wifi_list);
+      lv_obj_t *btn = lv_button_create(wifi_list);
       lv_obj_set_size(btn, lv_pct(100), 40);
       lv_obj_set_style_bg_color(btn, lv_color_hex(0x1565C0), 0);
       lv_obj_set_style_bg_color(btn, lv_color_hex(0x42A5F5), LV_STATE_PRESSED);
@@ -2978,7 +2978,7 @@ static void update_bt_list(void) {
     }
 
     // Create button manually (not using lv_list)
-    lv_obj_t *btn = lv_btn_create(bt_list);
+    lv_obj_t *btn = lv_button_create(bt_list);
     lv_obj_set_size(btn, lv_pct(100), 40);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x6A1B9A), 0); // Violet
     lv_obj_set_style_bg_color(btn, lv_color_hex(0xAB47BC), LV_STATE_PRESSED);
@@ -3156,7 +3156,7 @@ static void create_status_bar(lv_obj_t *parent) {
   lv_obj_align(title, LV_ALIGN_LEFT_MID, logo_img ? 38 : 0, 0);
 
   // Center: Alerts indicator (clickable)
-  lv_obj_t *alerts_btn = lv_btn_create(status_bar);
+  lv_obj_t *alerts_btn = lv_button_create(status_bar);
   lv_obj_set_size(alerts_btn, 200, 36);
   lv_obj_align(alerts_btn, LV_ALIGN_CENTER, 0, 0);
   lv_obj_set_style_bg_color(alerts_btn, lv_color_hex(0x1E3A5F), 0);
@@ -3252,7 +3252,7 @@ static void create_navbar(lv_obj_t *parent) {
   // === LEFT SIDE ===
 
   // Animals button
-  lv_obj_t *btn_animals = lv_btn_create(navbar);
+  lv_obj_t *btn_animals = lv_button_create(navbar);
   lv_obj_set_size(btn_animals, 50, 44);
   lv_obj_set_style_bg_color(btn_animals, COLOR_BG_CARD, 0);
   lv_obj_set_style_bg_color(btn_animals, lv_color_hex(0x4CAF50),
@@ -3268,7 +3268,7 @@ static void create_navbar(lv_obj_t *parent) {
   lv_obj_add_event_cb(btn_animals, nav_animals_cb, LV_EVENT_CLICKED, NULL);
 
   // Repro button
-  lv_obj_t *btn_repro = lv_btn_create(navbar);
+  lv_obj_t *btn_repro = lv_button_create(navbar);
   lv_obj_set_size(btn_repro, 50, 44);
   lv_obj_set_style_bg_color(btn_repro, COLOR_BG_CARD, 0);
   lv_obj_set_style_bg_color(btn_repro, lv_color_hex(0xFFAB00),
@@ -3286,7 +3286,7 @@ static void create_navbar(lv_obj_t *parent) {
   // === CENTER ===
 
   // Home button - center, larger
-  lv_obj_t *btn_home = lv_btn_create(navbar);
+  lv_obj_t *btn_home = lv_button_create(navbar);
   lv_obj_set_size(btn_home, 65, 48);
   lv_obj_set_style_bg_color(btn_home, COLOR_PRIMARY, 0);
   lv_obj_set_style_bg_color(btn_home, COLOR_PRIMARY_DARK, LV_STATE_PRESSED);
@@ -3305,7 +3305,7 @@ static void create_navbar(lv_obj_t *parent) {
   // === RIGHT SIDE ===
 
   // Photos button
-  lv_obj_t *btn_photos = lv_btn_create(navbar);
+  lv_obj_t *btn_photos = lv_button_create(navbar);
   lv_obj_set_size(btn_photos, 50, 44);
   lv_obj_set_style_bg_color(btn_photos, COLOR_BG_CARD, 0);
   lv_obj_set_style_bg_color(btn_photos, lv_color_hex(0x40C4FF),
@@ -3321,7 +3321,7 @@ static void create_navbar(lv_obj_t *parent) {
   lv_obj_add_event_cb(btn_photos, nav_gallery_cb, LV_EVENT_CLICKED, NULL);
 
   // Export button
-  lv_obj_t *btn_export = lv_btn_create(navbar);
+  lv_obj_t *btn_export = lv_button_create(navbar);
   lv_obj_set_size(btn_export, 50, 44);
   lv_obj_set_style_bg_color(btn_export, COLOR_BG_CARD, 0);
   lv_obj_set_style_bg_color(btn_export, lv_color_hex(0x9C27B0),
@@ -3337,7 +3337,7 @@ static void create_navbar(lv_obj_t *parent) {
   lv_obj_add_event_cb(btn_export, nav_conformity_cb, LV_EVENT_CLICKED, NULL);
 
   // Settings button (same color style as others)
-  lv_obj_t *btn_settings = lv_btn_create(navbar);
+  lv_obj_t *btn_settings = lv_button_create(navbar);
   lv_obj_set_size(btn_settings, 50, 44);
   lv_obj_set_style_bg_color(btn_settings, COLOR_BG_CARD, 0);
   lv_obj_set_style_bg_color(btn_settings, lv_color_hex(0x607D8B),
@@ -3460,7 +3460,7 @@ static void create_home_page(lv_obj_t *parent) {
         days >= threshold ? lv_color_hex(0xF44336) : lv_color_hex(0x4CAF50), 0);
     lv_obj_align(feed_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
-    lv_obj_t *settings_btn = lv_btn_create(card);
+    lv_obj_t *settings_btn = lv_button_create(card);
     lv_obj_set_size(settings_btn, 28, 28);
     lv_obj_align(settings_btn, LV_ALIGN_TOP_RIGHT, 0, -5);
     lv_obj_set_style_bg_color(settings_btn, lv_color_hex(0x00B8D4),
@@ -4431,7 +4431,7 @@ static void update_animal_list(void) {
       continue;
 
     // Create button manually (not using lv_list)
-    lv_obj_t *btn = lv_btn_create(animal_list);
+    lv_obj_t *btn = lv_button_create(animal_list);
     lv_obj_set_size(btn, lv_pct(100), 65);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x2E7D32), 0); // Vert foncé
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x4CAF50), LV_STATE_PRESSED);
@@ -5005,7 +5005,7 @@ static void create_ui(void) {
   if (!lvgl_port_lock(1000))
     return;
 
-  lv_obj_t *scr = lv_scr_act();
+  lv_obj_t *scr = lv_screen_active();
   lv_obj_set_style_bg_color(scr, COLOR_BG_DARK, 0);
 
   // Create fixed elements (status bar and navbar)
@@ -5166,7 +5166,7 @@ void app_main(void) {
   create_ui();
 
   // Initialize pet UI
-  lv_obj_t *scr = lv_scr_act();
+  lv_obj_t *scr = lv_screen_active();
   ui_pet_init(scr);
 
   backlight_set(100);

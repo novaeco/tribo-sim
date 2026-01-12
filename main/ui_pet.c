@@ -133,7 +133,7 @@ static lv_obj_t *create_need_bar(lv_obj_t *parent, const char *label_text, int x
 }
 
 static lv_obj_t *create_action_button(lv_obj_t *parent, const char *text, lv_event_cb_t callback, int x, int y, lv_color_t color) {
-    lv_obj_t *btn = lv_btn_create(parent);
+    lv_obj_t *btn = lv_button_create(parent);
     lv_obj_set_size(btn, 160, 55);
     lv_obj_set_pos(btn, x, y);
     lv_obj_add_event_cb(btn, callback, LV_EVENT_CLICKED, NULL);
@@ -375,10 +375,10 @@ void ui_pet_update(void) {
 
 static void show_food_menu(void) {
     if (g_food_menu) {
-        lv_obj_del(g_food_menu);
+        lv_obj_delete(g_food_menu);
     }
 
-    g_food_menu = lv_obj_create(lv_scr_act());
+    g_food_menu = lv_obj_create(lv_screen_active());
     lv_obj_set_size(g_food_menu, 500, 400);
     lv_obj_center(g_food_menu);
     lv_obj_set_style_bg_color(g_food_menu, lv_color_hex(0x2a2a3e), 0);
@@ -394,7 +394,7 @@ static void show_food_menu(void) {
     uint16_t *food_counts[] = {&inv->crickets, &inv->dubias, &inv->waxworms, &inv->isopods, &inv->earthworms};
 
     for (int i = 0; i < FOOD_COUNT; i++) {
-        lv_obj_t *btn = lv_btn_create(g_food_menu);
+        lv_obj_t *btn = lv_button_create(g_food_menu);
         lv_obj_set_size(btn, 220, 50);
         lv_obj_set_pos(btn, 20 + (i % 2) * 240, 60 + (i / 2) * 65);
 
@@ -413,7 +413,7 @@ static void show_food_menu(void) {
     }
 
     // Bouton fermer
-    lv_obj_t *btn_close = lv_btn_create(g_food_menu);
+    lv_obj_t *btn_close = lv_button_create(g_food_menu);
     lv_obj_set_size(btn_close, 460, 50);
     lv_obj_set_pos(btn_close, 20, 320);
     lv_obj_set_style_bg_color(btn_close, lv_color_hex(0x666666), 0);
@@ -436,7 +436,7 @@ static void food_menu_cb(lv_event_t *e) {
     }
 
     if (g_food_menu) {
-        lv_obj_del(g_food_menu);
+        lv_obj_delete(g_food_menu);
         g_food_menu = NULL;
     }
 
@@ -511,16 +511,16 @@ static void close_menu_cb(lv_event_t *e) {
     lv_obj_t *parent = lv_obj_get_parent(menu);
 
     if (g_food_menu && (parent == g_food_menu || menu == g_food_menu)) {
-        lv_obj_del(g_food_menu);
+        lv_obj_delete(g_food_menu);
         g_food_menu = NULL;
     } else if (g_shop_menu && (parent == g_shop_menu || menu == g_shop_menu)) {
-        lv_obj_del(g_shop_menu);
+        lv_obj_delete(g_shop_menu);
         g_shop_menu = NULL;
     } else if (g_pet_list_menu && (parent == g_pet_list_menu || menu == g_pet_list_menu)) {
-        lv_obj_del(g_pet_list_menu);
+        lv_obj_delete(g_pet_list_menu);
         g_pet_list_menu = NULL;
     } else if (g_new_pet_menu && (parent == g_new_pet_menu || menu == g_new_pet_menu)) {
-        lv_obj_del(g_new_pet_menu);
+        lv_obj_delete(g_new_pet_menu);
         g_new_pet_menu = NULL;
     } else {
         // Sauvegarder si c'est le bouton save
@@ -535,7 +535,7 @@ static void shop_buy_cb(lv_event_t *e) {
 
     // Fermer le menu boutique
     if (g_shop_menu) {
-        lv_obj_del(g_shop_menu);
+        lv_obj_delete(g_shop_menu);
         g_shop_menu = NULL;
     }
 
@@ -549,7 +549,7 @@ static void pet_select_cb(lv_event_t *e) {
 
     // Fermer le menu liste
     if (g_pet_list_menu) {
-        lv_obj_del(g_pet_list_menu);
+        lv_obj_delete(g_pet_list_menu);
         g_pet_list_menu = NULL;
     }
 
@@ -566,7 +566,7 @@ static void new_pet_create_cb(lv_event_t *e) {
 
     // Fermer le menu nouveau pet
     if (g_new_pet_menu) {
-        lv_obj_del(g_new_pet_menu);
+        lv_obj_delete(g_new_pet_menu);
         g_new_pet_menu = NULL;
     }
 
