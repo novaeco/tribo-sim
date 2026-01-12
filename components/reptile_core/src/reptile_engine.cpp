@@ -32,7 +32,7 @@ void ReptileEngine::init()
     addTerrarium(100.0f, 60.0f, 50.0f);
 
     // Create test reptile
-    uint32_t rex_id = addReptile("Rex", "Pogona vitticeps");
+    [[maybe_unused]] uint32_t rex_id = addReptile("Rex", "Pogona vitticeps");
 
     // Assign to first terrarium
     if (!m_state.reptiles.empty() && !m_state.terrariums.empty()) {
