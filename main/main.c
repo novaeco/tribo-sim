@@ -17,7 +17,7 @@
 #include "bsp_reptile.h"
 
 // TIER 2: Simulation Core (C interface)
-#include "reptile_engine.hpp"
+#include "reptile_engine_c.h"
 
 // LVGL
 #include "esp_lvgl_port.h"
