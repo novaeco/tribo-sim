@@ -67,7 +67,6 @@ esp_err_t bsp_display_init(lv_display_t **disp)
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = DPI_CLOCK_MHZ,
         .virtual_channel = 0,
-        .pixel_format = LV_COLOR_FORMAT_RGB565,  // This is correct for IDF 6.1
         .num_fbs = 2, // Double buffering
         .video_timing = {
             .h_size = BSP_LCD_H_RES,
