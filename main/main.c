@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include <stdbool.h>
 
 // TIER 1: BSP
 #include "bsp_reptile.h"
@@ -31,11 +32,27 @@ static const char *TAG = "REPTILE_SIM";
 
 static lv_display_t *g_lvgl_display = NULL;
 static lv_indev_t *g_lvgl_indev = NULL;
+static lv_obj_t *g_main_screen = NULL;
 
 // UI Elements
 static lv_obj_t *g_label_status = NULL;
 static lv_obj_t *g_label_time = NULL;
 static lv_obj_t *g_label_stats = NULL;
+
+static void lvgl_self_test_timer_cb(lv_timer_t *timer)
+{
+    LV_UNUSED(timer);
+    static bool toggle = false;
+
+    if (!g_main_screen || !g_label_status) {
+        return;
+    }
+
+    lv_color_t bg = toggle ? lv_color_hex(0x8B0000) : lv_color_hex(0x0D1F0D);
+    lv_obj_set_style_bg_color(g_main_screen, bg, 0);
+    lv_label_set_text(g_label_status, toggle ? "LVGL TEST: RED" : "REPTILE SIM ULTIMATE v3.0");
+    toggle = !toggle;
+}
 
 // ====================================================================================
 // RTOS TASKS
@@ -84,14 +101,17 @@ static void ui_update_task(void *arg)
             char time_buf[64];
             snprintf(time_buf, sizeof(time_buf), "Day %lu - %02d:%02d",
                      day, (int)hours, (int)((hours - (int)hours) * 60.0f));
-            lv_label_set_text(g_label_time, time_buf);
 
             // Update stats label
             char stats_buf[128];
             snprintf(stats_buf, sizeof(stats_buf),
                      "Animals: %d | Terrariums: %d",
                      reptile_count, terrarium_count);
+
+            lvgl_port_lock(0);
+            lv_label_set_text(g_label_time, time_buf);
             lv_label_set_text(g_label_stats, stats_buf);
+            lvgl_port_unlock();
         }
 
         vTaskDelayUntil(&last_wake, period);
@@ -107,35 +127,37 @@ static void create_ui(void)
     ESP_LOGI(TAG, "Creating UI...");
 
     // Main screen
-    lv_obj_t *screen = lv_scr_act();
-    lv_obj_set_style_bg_color(screen, lv_color_hex(0x0D1F0D), 0);
+    g_main_screen = lv_scr_act();
+    lv_obj_set_style_bg_color(g_main_screen, lv_color_hex(0x0D1F0D), 0);
 
     // Status label (top)
-    g_label_status = lv_label_create(screen);
+    g_label_status = lv_label_create(g_main_screen);
     lv_label_set_text(g_label_status, "REPTILE SIM ULTIMATE v3.0");
     lv_obj_set_style_text_color(g_label_status, lv_color_hex(0x4CAF50), 0);
     lv_obj_set_style_text_font(g_label_status, &lv_font_montserrat_24, 0);
     lv_obj_align(g_label_status, LV_ALIGN_TOP_MID, 0, 20);
 
     // Time label
-    g_label_time = lv_label_create(screen);
+    g_label_time = lv_label_create(g_main_screen);
     lv_label_set_text(g_label_time, "Day 1 - 12:00");
     lv_obj_set_style_text_color(g_label_time, lv_color_hex(0xF1F8E9), 0);
     lv_obj_set_style_text_font(g_label_time, &lv_font_montserrat_20, 0);
     lv_obj_align(g_label_time, LV_ALIGN_CENTER, 0, -50);
 
     // Stats label
-    g_label_stats = lv_label_create(screen);
+    g_label_stats = lv_label_create(g_main_screen);
     lv_label_set_text(g_label_stats, "Loading...");
     lv_obj_set_style_text_color(g_label_stats, lv_color_hex(0xA5D6A7), 0);
     lv_obj_set_style_text_font(g_label_stats, &lv_font_montserrat_18, 0);
     lv_obj_align(g_label_stats, LV_ALIGN_CENTER, 0, 0);
 
     // System ready indicator
-    lv_obj_t *label_ready = lv_label_create(screen);
+    lv_obj_t *label_ready = lv_label_create(g_main_screen);
     lv_label_set_text(label_ready, LV_SYMBOL_OK " System Ready");
     lv_obj_set_style_text_color(label_ready, lv_color_hex(0x66BB6A), 0);
     lv_obj_align(label_ready, LV_ALIGN_BOTTOM_MID, 0, -50);
+
+    lv_timer_create(lvgl_self_test_timer_cb, 1000, NULL);
 
     ESP_LOGI(TAG, "UI created successfully");
 }
@@ -195,7 +217,9 @@ void app_main(void)
     // ====================================================================================
 
     ESP_LOGI(TAG, "[TIER 3] Creating UI...");
+    lvgl_port_lock(0);
     create_ui();
+    lvgl_port_unlock();
 
     // ====================================================================================
     // Create RTOS Tasks
