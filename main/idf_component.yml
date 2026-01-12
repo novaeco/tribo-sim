@@ -1,0 +1,12 @@
+## IDF Component Manager Manifest File
+dependencies:
+  # LVGL Graphics Library (Managed Component)
+  lvgl/lvgl: "^9.4.0"
+  espressif/esp_lvgl_port: "^2.4.4"
+
+  # Local components dependencies
+  esp32p4_reptile_bsp: "*"
+  reptile_core: "*"
+
+  idf:
+    version: ">=5.3.0"

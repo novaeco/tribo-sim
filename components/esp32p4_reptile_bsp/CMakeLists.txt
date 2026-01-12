@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "src/bsp_display.c"
+        "src/bsp_touch.c"
+        "src/bsp_sdcard.c"
+        "src/bsp_lcd_st7701.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        driver
+        esp_lcd
+        esp_lcd_touch
+        esp_lcd_touch_gt911
+        fatfs
+        sdmmc
+        vfs
+        esp_driver_sdmmc
+        lvgl
+)

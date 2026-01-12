@@ -1,0 +1,189 @@
+menu "Application Configuration"
+
+    menu "LCD Display Settings"
+        config APP_LCD_H_RES
+            int "LCD horizontal resolution"
+            default 1024
+            help
+                Horizontal resolution of the LCD panel in pixels.
+
+        config APP_LCD_V_RES
+            int "LCD vertical resolution"
+            default 600
+            help
+                Vertical resolution of the LCD panel in pixels (7-inch panel).
+
+        choice APP_LCD_ORIENTATION
+            prompt "LCD orientation"
+            default APP_LCD_ORIENTATION_LANDSCAPE
+            help
+                Select the display orientation (7-inch panel is landscape).
+
+            config APP_LCD_ORIENTATION_PORTRAIT
+                bool "Portrait (600x1024)"
+
+            config APP_LCD_ORIENTATION_LANDSCAPE
+                bool "Landscape (1024x600)"
+        endchoice
+
+        config APP_LVGL_ROTATION
+            int "LVGL software rotation (0, 90, 180, 270)"
+            default 0
+            range 0 270
+            help
+                LVGL software rotation angle in degrees.
+
+        choice APP_LCD_ROTATION
+            prompt "LCD rotation"
+            default APP_LCD_ROTATION_0
+
+            config APP_LCD_ROTATION_0
+                bool "0°"
+
+            config APP_LCD_ROTATION_90
+                bool "90°"
+
+            config APP_LCD_ROTATION_180
+                bool "180°"
+
+            config APP_LCD_ROTATION_270
+                bool "270°"
+        endchoice
+
+        config APP_LCD_HSYNC
+            int "HSYNC pulse width"
+            default 4
+
+        config APP_LCD_HBP
+            int "Horizontal back porch"
+            default 8
+
+        config APP_LCD_HFP
+            int "Horizontal front porch"
+            default 16
+
+        config APP_LCD_VSYNC
+            int "VSYNC pulse width"
+            default 4
+
+        config APP_LCD_VBP
+            int "Vertical back porch"
+            default 8
+
+        config APP_LCD_VFP
+            int "Vertical front porch"
+            default 16
+
+        config APP_LCD_PCLK
+            int "Pixel clock (Hz)"
+            default 20000000
+
+        choice APP_LCD_RGB_ORDER
+            prompt "RGB color order"
+            default APP_LCD_RGB_ORDER_RGB
+
+            config APP_LCD_RGB_ORDER_RGB
+                bool "RGB"
+
+            config APP_LCD_RGB_ORDER_BGR
+                bool "BGR"
+        endchoice
+    endmenu
+
+    menu "MIPI-DSI Settings"
+        config APP_DSI_LANE_NUM
+            int "MIPI-DSI lane number"
+            default 2
+            range 1 4
+            help
+                Number of MIPI-DSI data lanes.
+
+        config APP_DSI_LANE_BITRATE_MBPS
+            int "MIPI-DSI lane bit rate (Mbps)"
+            default 800
+            help
+                Bit rate per lane in Mbps.
+    endmenu
+
+    menu "Touch Controller Settings (GT911)"
+        config APP_TOUCH_I2C_PORT
+            int "I2C port number for touch"
+            default 0
+            range 0 1
+            help
+                I2C port number used for the touch controller.
+
+        config APP_TOUCH_I2C_SDA
+            int "Touch I2C SDA GPIO"
+            default 22
+            help
+                GPIO number for I2C SDA signal.
+
+        config APP_TOUCH_I2C_SCL
+            int "Touch I2C SCL GPIO"
+            default 23
+            help
+                GPIO number for I2C SCL signal.
+
+        config APP_TOUCH_I2C_ADDR
+            hex "Touch controller I2C address"
+            default 0x5D
+            help
+                I2C address of the GT911 touch controller.
+                0x5D (default) or 0x14.
+
+        config APP_TOUCH_I2C_INT_GPIO
+            int "Touch interrupt GPIO"
+            default 20
+            help
+                GPIO number for touch interrupt signal.
+
+        config APP_TOUCH_I2C_RST_GPIO
+            int "Touch reset GPIO"
+            default 21
+            help
+                GPIO number for touch reset signal.
+
+        config APP_TOUCH_SWAP_XY
+            bool "Touch swap XY"
+            default n
+
+        config APP_TOUCH_MIRROR_X
+            bool "Touch mirror X"
+            default n
+
+        config APP_TOUCH_INVERT_Y
+            bool "Touch invert Y"
+            default n
+    endmenu
+
+    menu "LVGL Task Settings"
+        config APP_LVGL_TASK_STACK_SIZE
+            int "LVGL task stack size"
+            default 8192
+
+        config APP_LVGL_TASK_PRIORITY
+            int "LVGL task priority"
+            default 5
+    endmenu
+
+    menu "Log Settings"
+        choice APP_LOG_DEFAULT_LEVEL
+            prompt "Default log level"
+            default APP_LOG_DEFAULT_LEVEL_INFO
+
+            config APP_LOG_DEFAULT_LEVEL_DEBUG
+                bool "Debug"
+
+            config APP_LOG_DEFAULT_LEVEL_INFO
+                bool "Info"
+
+            config APP_LOG_DEFAULT_LEVEL_WARN
+                bool "Warn"
+
+            config APP_LOG_DEFAULT_LEVEL_ERROR
+                bool "Error"
+        endchoice
+    endmenu
+
+endmenu

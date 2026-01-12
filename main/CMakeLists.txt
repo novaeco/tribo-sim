@@ -1,0 +1,13 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "app_tasks.c"
+        "ui_bridge.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp32p4_reptile_bsp
+        reptile_core
+        lvgl
+        esp_lvgl_port
+)
