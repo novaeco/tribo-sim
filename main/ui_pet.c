@@ -96,7 +96,7 @@ static lv_color_t get_bar_color(uint8_t value) {
 }
 
 static lv_color_t get_species_color(tribolonotus_species_t species) {
-    static const lv_color_t colors[] = {
+    static const uint32_t colors[] = {
         0x4caf50, // T. gracilis - Vert
         0x2196f3, // T. novaeguineae - Bleu
         0x9c27b0, // T. ponceleti - Violet
@@ -345,7 +345,7 @@ void ui_pet_update(void) {
 
     // Argent
     char money_buf[32];
-    snprintf(money_buf, sizeof(money_buf), LV_SYMBOL_DOWNLOAD " $%ld", pet_get_money());
+    snprintf(money_buf, sizeof(money_buf), LV_SYMBOL_DOWNLOAD " $%lu", pet_get_money());
     lv_label_set_text(g_money_label, money_buf);
 
     // Alertes critiques (toutes les 5 secondes)
@@ -641,7 +641,7 @@ void ui_pet_show_shop(void) {
     char shop_buf[512];
     snprintf(shop_buf, sizeof(shop_buf),
              "🛒 BOUTIQUE & INVENTAIRE\n\n"
-             "💰 Argent: $%ld\n\n"
+             "💰 Argent: $%lu\n\n"
              "📦 STOCK ACTUEL:\n"
              "Grillons: %u ($1/u)\n"
              "Dubias: %u ($2/u)\n"
