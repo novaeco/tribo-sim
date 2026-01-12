@@ -7,6 +7,7 @@ idf_component_register(
         "."
     REQUIRES
         esp32p4_reptile_bsp
+        nvs_flash
         reptile_core
         lvgl
         esp_lvgl_port
