@@ -1,6 +1,13 @@
 menu "Application Configuration"
 
     menu "LCD Display Settings"
+        config APP_DISPLAY_SELF_TEST
+            bool "Draw boot test pattern"
+            default y
+            help
+                Draw a simple RGB test pattern at boot to validate panel data path
+                before LVGL starts. Disable once the display is confirmed.
+
         config APP_LCD_H_RES
             int "LCD horizontal resolution"
             default 1024
