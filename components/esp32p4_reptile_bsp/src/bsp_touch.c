@@ -38,6 +38,7 @@ esp_err_t bsp_touch_init(lv_indev_t **indev, lv_display_t *disp)
     // Step 2: Panel IO for Touch
     esp_lcd_panel_io_handle_t tp_io = NULL;
     esp_lcd_panel_io_i2c_config_t tp_io_cfg = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+    tp_io_cfg.scl_speed_hz = BSP_TOUCH_I2C_FREQ_HZ;
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus, &tp_io_cfg, &tp_io));
 
     // Step 3: GT911 Touch Configuration
