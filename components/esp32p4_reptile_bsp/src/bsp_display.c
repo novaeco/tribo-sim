@@ -138,7 +138,12 @@ esp_err_t bsp_display_init(lv_display_t **disp)
     ESP_ERROR_CHECK(esp_lcd_panel_init(g_lcd_panel));
     ESP_LOGI(TAG, "DPI panel initialized");
 
-    // Step 8: Backlight ON
+    // Step 8: Ensure display output is enabled on both controller and DPI panel
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(g_lcd_ctrl_panel, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(g_lcd_panel, true));
+    ESP_LOGI(TAG, "Display output enabled");
+
+    // Step 9: Backlight ON
     gpio_config_t bk_gpio_config = {
         .pin_bit_mask = BIT64(BSP_LCD_BL_GPIO),
         .mode = GPIO_MODE_OUTPUT,
@@ -151,7 +156,7 @@ esp_err_t bsp_display_init(lv_display_t **disp)
     bsp_display_draw_test_pattern();
 #endif
 
-    // Step 9: Create LVGL Display (if requested)
+    // Step 10: Create LVGL Display (if requested)
     if (disp) {
         const lvgl_port_display_cfg_t disp_cfg = {
             .io_handle = NULL,
