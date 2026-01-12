@@ -645,14 +645,14 @@ bool shop_buy_food(food_type_t food_type, uint16_t quantity) {
     uint32_t total_cost = price_per_unit * quantity;
 
     if (g_game_state.player_money < total_cost) {
-        ESP_LOGW(TAG, "Pas assez d'argent (besoin $%ld)", total_cost);
+        ESP_LOGW(TAG, "Pas assez d'argent (besoin $%lu)", total_cost);
         return false;
     }
 
     g_game_state.player_money -= total_cost;
     *food_count += quantity;
 
-    ESP_LOGI(TAG, "Acheté %d unités pour $%ld", quantity, total_cost);
+    ESP_LOGI(TAG, "Acheté %d unités pour $%lu", quantity, total_cost);
     return true;
 }
 

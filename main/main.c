@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <stdint.h>
 
 // GPIO and power control
 #include "driver/gpio.h"
@@ -407,7 +408,7 @@ typedef enum {
 typedef enum { SEX_UNKNOWN = 0, SEX_MALE, SEX_FEMALE } reptile_sex_t;
 
 // Health status
-typedef enum { HEALTH_GOOD = 0, HEALTH_ATTENTION, HEALTH_SICK } health_status_t;
+typedef enum { HEALTH_GOOD = 0, HEALTH_ATTENTION, HEALTH_SICK } reptile_health_status_t;
 // CITES Annex classification (Règlement UE 338/97)
 typedef enum {
   CITES_NOT_LISTED = 0, // Non concerné
@@ -480,7 +481,7 @@ typedef struct {
   time_t last_feeding;
   time_t last_weight;
   time_t last_shed;
-  health_status_t health;
+  reptile_health_status_t health;
   bool is_breeding;
   char photo_path[64];
   char notes[128];
