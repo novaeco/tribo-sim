@@ -129,7 +129,6 @@ esp_err_t bsp_display_init(lv_display_t **disp)
                 .mirror_x = false,
                 .mirror_y = false,
             },
-            .rounder_cb = NULL,
             .color_format = LV_COLOR_FORMAT_RGB565,
             .flags = {
                 .buff_dma = false,
