@@ -19,6 +19,7 @@
 #include "esp_lvgl_port_disp.h"
 #include "esp_ldo_regulator.h"
 #include "esp_heap_caps.h"
+#include "esp_err.h"
 #include "driver/gpio.h"
 #include <stdlib.h>
 
@@ -36,6 +37,20 @@ static const char *TAG = "BSP_DISPLAY";
 
 static esp_lcd_panel_handle_t g_lcd_panel = NULL;
 static esp_lcd_panel_handle_t g_lcd_ctrl_panel = NULL;
+
+static esp_err_t bsp_display_try_disp_on_off(esp_lcd_panel_handle_t panel, bool enable)
+{
+    if (!panel) {
+        return ESP_OK;
+    }
+
+    esp_err_t err = esp_lcd_panel_disp_on_off(panel, enable);
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW(TAG, "disp_on_off not supported by panel (ignored)");
+        return ESP_OK;
+    }
+    return err;
+}
 
 static void bsp_display_draw_test_pattern(void)
 {
@@ -139,8 +154,8 @@ esp_err_t bsp_display_init(lv_display_t **disp)
     ESP_LOGI(TAG, "DPI panel initialized");
 
     // Step 8: Ensure display output is enabled on both controller and DPI panel
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(g_lcd_ctrl_panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(g_lcd_panel, true));
+    ESP_ERROR_CHECK(bsp_display_try_disp_on_off(g_lcd_ctrl_panel, true));
+    ESP_ERROR_CHECK(bsp_display_try_disp_on_off(g_lcd_panel, true));
     ESP_LOGI(TAG, "Display output enabled");
 
     // Step 9: Backlight ON
