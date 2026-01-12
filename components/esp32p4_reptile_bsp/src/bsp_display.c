@@ -18,7 +18,9 @@
 #include "esp_lcd_st7701.h"
 #include "esp_lvgl_port_disp.h"
 #include "esp_ldo_regulator.h"
+#include "esp_heap_caps.h"
 #include "driver/gpio.h"
+#include <stdlib.h>
 
 static const char *TAG = "BSP_DISPLAY";
 
@@ -34,6 +36,38 @@ static const char *TAG = "BSP_DISPLAY";
 
 static esp_lcd_panel_handle_t g_lcd_panel = NULL;
 static esp_lcd_panel_handle_t g_lcd_ctrl_panel = NULL;
+
+static void bsp_display_draw_test_pattern(void)
+{
+    const uint16_t stripe_colors[] = {
+        0xF800, // Red
+        0x07E0, // Green
+        0x001F, // Blue
+    };
+    const int stripe_count = (int)(sizeof(stripe_colors) / sizeof(stripe_colors[0]));
+    const int stripe_height = BSP_LCD_V_RES / stripe_count;
+
+    uint16_t *line_buf = heap_caps_malloc(BSP_LCD_H_RES * sizeof(uint16_t),
+                                          MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (!line_buf) {
+        ESP_LOGW(TAG, "Test pattern skipped (no DMA-capable buffer)");
+        return;
+    }
+
+    for (int i = 0; i < stripe_count; i++) {
+        for (int x = 0; x < BSP_LCD_H_RES; x++) {
+            line_buf[x] = stripe_colors[i];
+        }
+        int y_start = i * stripe_height;
+        int y_end = (i == stripe_count - 1) ? BSP_LCD_V_RES : (i + 1) * stripe_height;
+        for (int y = y_start; y < y_end; y++) {
+            esp_lcd_panel_draw_bitmap(g_lcd_panel, 0, y, BSP_LCD_H_RES, y + 1, line_buf);
+        }
+    }
+
+    free(line_buf);
+    ESP_LOGI(TAG, "Boot test pattern drawn");
+}
 
 // ====================================================================================
 // PUBLIC API IMPLEMENTATION
@@ -111,6 +145,10 @@ esp_err_t bsp_display_init(lv_display_t **disp)
     ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
     gpio_set_level(BSP_LCD_BL_GPIO, 1); // Full brightness
     ESP_LOGI(TAG, "Backlight enabled");
+
+#if CONFIG_APP_DISPLAY_SELF_TEST
+    bsp_display_draw_test_pattern();
+#endif
 
     // Step 9: Create LVGL Display (if requested)
     if (disp) {
