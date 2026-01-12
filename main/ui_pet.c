@@ -7,6 +7,7 @@
 #include "pet_simulator.h"
 #include "esp_log.h"
 #include <stdio.h>
+#include <stdint.h>
 
 static const char *TAG = "UI_PET";
 
@@ -304,7 +305,7 @@ void ui_pet_update(void) {
     const species_info_t *info = pet_get_species_info(pet->species);
     char info_buf[128];
     const char *sex_str = (pet->sex == SEX_MALE) ? "♂️" : (pet->sex == SEX_FEMALE) ? "♀️" : "?";
-    snprintf(info_buf, sizeof(info_buf), "%s | %s %s | %luj",
+    snprintf(info_buf, sizeof(info_buf), "%s | %s %s | %lu j",
              info->name_common,
              pet_stage_to_string(pet->stage),
              sex_str,
@@ -427,7 +428,7 @@ static void show_food_menu(void) {
 static void food_menu_cb(lv_event_t *e) {
     food_type_t food = (food_type_t)(intptr_t)lv_event_get_user_data(e);
 
-    if (pet_feed(pet_get_current() ? 0 : -1, food)) {
+    if (pet_feed(pet_get_current_index(), food)) {
         ESP_LOGI(TAG, "Lézard nourri avec succès");
         ui_pet_show_message("Succès", "Votre lézard a mangé !");
     } else {
@@ -455,35 +456,35 @@ static void btn_water_cb(lv_event_t *e) {
     ESP_LOGI(TAG, "Bouton ABREUVER");
 
     pet_t *pet = pet_get_current();
-    if (pet && pet_water(0)) {
+    if (pet && pet_water(pet_get_current_index())) {
         ui_pet_show_message("Succès", "Lézard hydraté ! 💧");
     }
     ui_pet_update();
 }
 
 static void btn_heat_cb(lv_event_t *e) {
-    if (pet_heat(0, 10)) {
+    if (pet_heat(pet_get_current_index(), 10)) {
         ui_pet_show_message("Succès", "Zone chaude activée ! 🌡️");
     }
     ui_pet_update();
 }
 
 static void btn_mist_cb(lv_event_t *e) {
-    if (pet_mist(0)) {
+    if (pet_mist(pet_get_current_index())) {
         ui_pet_show_message("Succès", "Terrarium brumisé ! 💨");
     }
     ui_pet_update();
 }
 
 static void btn_clean_cb(lv_event_t *e) {
-    if (pet_clean(0)) {
+    if (pet_clean(pet_get_current_index())) {
         ui_pet_show_message("Succès", "Terrarium nettoyé ! 🧹");
     }
     ui_pet_update();
 }
 
 static void btn_play_cb(lv_event_t *e) {
-    if (pet_play(0)) {
+    if (pet_play(pet_get_current_index())) {
         ui_pet_show_message("Succès", "Votre lézard est content ! 😊");
     }
     ui_pet_update();
@@ -526,6 +527,52 @@ static void close_menu_cb(lv_event_t *e) {
         pet_simulator_save();
         ui_pet_show_message("Sauvegarde", "Partie sauvegardée ! 💾");
     }
+}
+
+static void shop_buy_cb(lv_event_t *e) {
+    lv_obj_t *btn = lv_event_get_target(e);
+    intptr_t item_id = (intptr_t)lv_event_get_user_data(e);
+
+    // Fermer le menu boutique
+    if (g_shop_menu) {
+        lv_obj_del(g_shop_menu);
+        g_shop_menu = NULL;
+    }
+
+    // TODO: Implémenter l'achat d'items
+    ESP_LOGI(TAG, "Achat item %d", (int)item_id);
+    ui_pet_show_message("Boutique", "Fonctionnalité d'achat en développement");
+}
+
+static void pet_select_cb(lv_event_t *e) {
+    intptr_t pet_index = (intptr_t)lv_event_get_user_data(e);
+
+    // Fermer le menu liste
+    if (g_pet_list_menu) {
+        lv_obj_del(g_pet_list_menu);
+        g_pet_list_menu = NULL;
+    }
+
+    // Changer le pet courant
+    if (pet_index >= 0 && pet_index < MAX_PETS) {
+        pet_set_current((int)pet_index);
+        ui_pet_update();
+        ESP_LOGI(TAG, "Pet sélectionné: %d", (int)pet_index);
+    }
+}
+
+static void new_pet_create_cb(lv_event_t *e) {
+    intptr_t species_id = (intptr_t)lv_event_get_user_data(e);
+
+    // Fermer le menu nouveau pet
+    if (g_new_pet_menu) {
+        lv_obj_del(g_new_pet_menu);
+        g_new_pet_menu = NULL;
+    }
+
+    // TODO: Créer un nouveau pet de l'espèce sélectionnée
+    ESP_LOGI(TAG, "Création pet espèce %d", (int)species_id);
+    ui_pet_show_message("Nouveau lézard", "Création en développement");
 }
 
 // ====================================================================================

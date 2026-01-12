@@ -191,6 +191,10 @@ void pet_set_current(uint8_t pet_index) {
     }
 }
 
+uint8_t pet_get_current_index(void) {
+    return g_game_state.current_pet_index;
+}
+
 uint8_t pet_get_count(void) {
     return g_game_state.pet_count;
 }
