@@ -54,19 +54,29 @@ void ReptileEngine::init()
 
 void ReptileEngine::tick(float delta_time)
 {
-    // Update game time
-    m_state.game_time_hours += delta_time / 3600.0f;
+    // Update game time (1 real second = 1 game minute)
+    // delta_time is in seconds, so divide by 60 to get game hours
+    m_state.game_time_hours += delta_time / 60.0f;
     if (m_state.game_time_hours >= 24.0f) {
         m_state.game_time_hours -= 24.0f;
         m_state.game_day++;
     }
 
-    // Update all simulation engines
+    // Update all 14 simulation engines
     updatePhysics(delta_time);
     updateBiology(delta_time);
     updateNutrition(delta_time);
     updateSanitary(delta_time);
     updateEconomy(delta_time);
+    updateBehavior(delta_time);
+    updateGenetics(delta_time);
+    updateReproduction(delta_time);
+    updateSocial(delta_time);
+    updateSeasonal(delta_time);
+    updateSecurity(delta_time);
+    updateTechnical(delta_time);
+    updateAdmin(delta_time);
+    updateWeather(delta_time);
 }
 
 // ====================================================================================
@@ -179,9 +189,10 @@ void ReptileEngine::updateSanitary(float dt)
 
 void ReptileEngine::updateEconomy(float dt)
 {
-    // Electricity costs (per hour)
+    // Electricity costs (per game hour, dt is in real seconds)
+    // 1 real second = 1 game minute, so dt/60 = game hours elapsed
     float num_terrariums = static_cast<float>(m_state.terrariums.size());
-    m_state.economy.electricity_cost += (num_terrariums * 0.5f) * (dt / 3600.0f);
+    m_state.economy.electricity_cost += (num_terrariums * 0.5f) * (dt / 60.0f);
 
     m_state.economy.total_expenses = m_state.economy.electricity_cost +
                                      m_state.economy.food_cost +
@@ -256,6 +267,63 @@ void ReptileEngine::cleanTerrarium(uint32_t terrarium_id)
             break;
         }
     }
+}
+
+// Forward declarations for external simulation engine functions
+void updateBehavior(GameState& state, float dt);
+void updateGenetics(GameState& state, float dt);
+void updateReproduction(GameState& state, float dt);
+void updateSocial(GameState& state, float dt);
+void updateSeasonal(GameState& state, float dt);
+void updateSecurity(GameState& state, float dt);
+void updateTechnical(GameState& state, float dt);
+void updateAdmin(GameState& state, float dt);
+void updateWeather(GameState& state, float dt);
+
+// Wrapper methods that call external engine functions
+void ReptileEngine::updateBehavior(float dt)
+{
+    ReptileSim::updateBehavior(m_state, dt);
+}
+
+void ReptileEngine::updateGenetics(float dt)
+{
+    ReptileSim::updateGenetics(m_state, dt);
+}
+
+void ReptileEngine::updateReproduction(float dt)
+{
+    ReptileSim::updateReproduction(m_state, dt);
+}
+
+void ReptileEngine::updateSocial(float dt)
+{
+    ReptileSim::updateSocial(m_state, dt);
+}
+
+void ReptileEngine::updateSeasonal(float dt)
+{
+    ReptileSim::updateSeasonal(m_state, dt);
+}
+
+void ReptileEngine::updateSecurity(float dt)
+{
+    ReptileSim::updateSecurity(m_state, dt);
+}
+
+void ReptileEngine::updateTechnical(float dt)
+{
+    ReptileSim::updateTechnical(m_state, dt);
+}
+
+void ReptileEngine::updateAdmin(float dt)
+{
+    ReptileSim::updateAdmin(m_state, dt);
+}
+
+void ReptileEngine::updateWeather(float dt)
+{
+    ReptileSim::updateWeather(m_state, dt);
 }
 
 } // namespace ReptileSim
