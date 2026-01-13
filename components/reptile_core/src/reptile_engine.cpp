@@ -269,6 +269,144 @@ void ReptileEngine::cleanTerrarium(uint32_t terrarium_id)
     }
 }
 
+// ====================================================================================
+// EQUIPMENT CONTROL
+// ====================================================================================
+
+void ReptileEngine::setHeater(uint32_t terrarium_id, bool on)
+{
+    for (auto& terra : m_state.terrariums) {
+        if (terra.id == terrarium_id) {
+            terra.heater_on = on;
+            break;
+        }
+    }
+}
+
+void ReptileEngine::setLight(uint32_t terrarium_id, bool on)
+{
+    for (auto& terra : m_state.terrariums) {
+        if (terra.id == terrarium_id) {
+            terra.light_on = on;
+            break;
+        }
+    }
+}
+
+void ReptileEngine::setMister(uint32_t terrarium_id, bool on)
+{
+    for (auto& terra : m_state.terrariums) {
+        if (terra.id == terrarium_id) {
+            terra.mister_on = on;
+            break;
+        }
+    }
+}
+
+// ====================================================================================
+// STATE GETTERS
+// ====================================================================================
+
+float ReptileEngine::getTerrariumTemp(uint32_t terrarium_id) const
+{
+    for (const auto& terra : m_state.terrariums) {
+        if (terra.id == terrarium_id) {
+            return terra.temp_hot_zone;
+        }
+    }
+    return 0.0f;
+}
+
+float ReptileEngine::getTerrariumHumidity(uint32_t terrarium_id) const
+{
+    for (const auto& terra : m_state.terrariums) {
+        if (terra.id == terrarium_id) {
+            return terra.humidity;
+        }
+    }
+    return 0.0f;
+}
+
+float ReptileEngine::getTerrariumWaste(uint32_t terrarium_id) const
+{
+    for (const auto& terra : m_state.terrariums) {
+        if (terra.id == terrarium_id) {
+            return terra.waste_level;
+        }
+    }
+    return 0.0f;
+}
+
+bool ReptileEngine::getHeaterState(uint32_t terrarium_id) const
+{
+    for (const auto& terra : m_state.terrariums) {
+        if (terra.id == terrarium_id) {
+            return terra.heater_on;
+        }
+    }
+    return false;
+}
+
+bool ReptileEngine::getLightState(uint32_t terrarium_id) const
+{
+    for (const auto& terra : m_state.terrariums) {
+        if (terra.id == terrarium_id) {
+            return terra.light_on;
+        }
+    }
+    return false;
+}
+
+bool ReptileEngine::getMisterState(uint32_t terrarium_id) const
+{
+    for (const auto& terra : m_state.terrariums) {
+        if (terra.id == terrarium_id) {
+            return terra.mister_on;
+        }
+    }
+    return false;
+}
+
+float ReptileEngine::getReptileStress(uint32_t reptile_id) const
+{
+    for (const auto& reptile : m_state.reptiles) {
+        if (reptile.id == reptile_id) {
+            return reptile.stress_level;
+        }
+    }
+    return 0.0f;
+}
+
+float ReptileEngine::getReptileWeight(uint32_t reptile_id) const
+{
+    for (const auto& reptile : m_state.reptiles) {
+        if (reptile.id == reptile_id) {
+            return reptile.weight_grams;
+        }
+    }
+    return 0.0f;
+}
+
+bool ReptileEngine::isReptileHungry(uint32_t reptile_id) const
+{
+    for (const auto& reptile : m_state.reptiles) {
+        if (reptile.id == reptile_id) {
+            return reptile.is_hungry;
+        }
+    }
+    return false;
+}
+
+bool ReptileEngine::isReptileHealthy(uint32_t reptile_id) const
+{
+    for (const auto& reptile : m_state.reptiles) {
+        if (reptile.id == reptile_id) {
+            return reptile.is_healthy;
+        }
+    }
+    return false;
+}
+
 // Forward declarations for external simulation engine functions
 void updateBehavior(GameState& state, float dt);
 void updateGenetics(GameState& state, float dt);
@@ -362,6 +500,85 @@ int reptile_engine_get_reptile_count(void)
 int reptile_engine_get_terrarium_count(void)
 {
     return static_cast<int>(ReptileSim::ReptileEngine::getInstance().getState().terrariums.size());
+}
+
+// Equipment control
+void reptile_engine_set_heater(uint32_t terrarium_id, bool on)
+{
+    ReptileSim::ReptileEngine::getInstance().setHeater(terrarium_id, on);
+}
+
+void reptile_engine_set_light(uint32_t terrarium_id, bool on)
+{
+    ReptileSim::ReptileEngine::getInstance().setLight(terrarium_id, on);
+}
+
+void reptile_engine_set_mister(uint32_t terrarium_id, bool on)
+{
+    ReptileSim::ReptileEngine::getInstance().setMister(terrarium_id, on);
+}
+
+// Actions
+void reptile_engine_feed_animal(uint32_t reptile_id)
+{
+    ReptileSim::ReptileEngine::getInstance().feedAnimal(reptile_id);
+}
+
+void reptile_engine_clean_terrarium(uint32_t terrarium_id)
+{
+    ReptileSim::ReptileEngine::getInstance().cleanTerrarium(terrarium_id);
+}
+
+// Terrarium state getters
+float reptile_engine_get_terrarium_temp(uint32_t terrarium_id)
+{
+    return ReptileSim::ReptileEngine::getInstance().getTerrariumTemp(terrarium_id);
+}
+
+float reptile_engine_get_terrarium_humidity(uint32_t terrarium_id)
+{
+    return ReptileSim::ReptileEngine::getInstance().getTerrariumHumidity(terrarium_id);
+}
+
+float reptile_engine_get_terrarium_waste(uint32_t terrarium_id)
+{
+    return ReptileSim::ReptileEngine::getInstance().getTerrariumWaste(terrarium_id);
+}
+
+bool reptile_engine_get_heater_state(uint32_t terrarium_id)
+{
+    return ReptileSim::ReptileEngine::getInstance().getHeaterState(terrarium_id);
+}
+
+bool reptile_engine_get_light_state(uint32_t terrarium_id)
+{
+    return ReptileSim::ReptileEngine::getInstance().getLightState(terrarium_id);
+}
+
+bool reptile_engine_get_mister_state(uint32_t terrarium_id)
+{
+    return ReptileSim::ReptileEngine::getInstance().getMisterState(terrarium_id);
+}
+
+// Reptile state getters
+float reptile_engine_get_reptile_stress(uint32_t reptile_id)
+{
+    return ReptileSim::ReptileEngine::getInstance().getReptileStress(reptile_id);
+}
+
+float reptile_engine_get_reptile_weight(uint32_t reptile_id)
+{
+    return ReptileSim::ReptileEngine::getInstance().getReptileWeight(reptile_id);
+}
+
+bool reptile_engine_is_reptile_hungry(uint32_t reptile_id)
+{
+    return ReptileSim::ReptileEngine::getInstance().isReptileHungry(reptile_id);
+}
+
+bool reptile_engine_is_reptile_healthy(uint32_t reptile_id)
+{
+    return ReptileSim::ReptileEngine::getInstance().isReptileHealthy(reptile_id);
 }
 
 } // extern "C"
