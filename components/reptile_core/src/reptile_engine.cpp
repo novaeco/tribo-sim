@@ -5,6 +5,8 @@
 
 #include "reptile_engine.hpp"
 #include <cmath>
+#include <cstring>
+#include <cstdio>
 
 namespace ReptileSim {
 
@@ -267,6 +269,162 @@ void ReptileEngine::cleanTerrarium(uint32_t terrarium_id)
             break;
         }
     }
+}
+
+// ====================================================================================
+// SAVE/LOAD SYSTEM
+// ====================================================================================
+
+bool ReptileEngine::saveGame(const char* filepath)
+{
+    FILE* f = fopen(filepath, "w");
+    if (!f) return false;
+
+    // Save game state
+    fprintf(f, "GAME=%lu,%.2f,%.2f,%.2f,%d\n",
+            m_state.game_day,
+            m_state.game_time_hours,
+            m_state.external_temperature,
+            m_state.external_humidity,
+            m_state.heatwave_active ? 1 : 0);
+
+    // Save economy
+    fprintf(f, "ECONOMY=%.2f,%.2f,%.2f,%.2f\n",
+            m_state.economy.total_expenses,
+            m_state.economy.electricity_cost,
+            m_state.economy.food_cost,
+            m_state.economy.veterinary_cost);
+
+    // Save reptiles
+    for (const auto& r : m_state.reptiles) {
+        fprintf(f, "REPTILE=%lu,%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%lu\n",
+                r.id,
+                r.name.c_str(),
+                r.species.c_str(),
+                r.weight_grams,
+                r.bone_density,
+                r.hydration,
+                r.stress_level,
+                r.stomach_content,
+                r.immune_system,
+                r.is_healthy ? 1 : 0,
+                r.is_hungry ? 1 : 0,
+                r.is_shedding ? 1 : 0,
+                r.assigned_terrarium_id);
+    }
+
+    // Save terrariums
+    for (const auto& t : m_state.terrariums) {
+        fprintf(f, "TERRARIUM=%lu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d\n",
+                t.id,
+                t.width,
+                t.height,
+                t.depth,
+                t.temp_hot_zone,
+                t.temp_cold_zone,
+                t.humidity,
+                t.uv_index,
+                t.waste_level,
+                t.bacteria_count,
+                t.heater_on ? 1 : 0,
+                t.light_on ? 1 : 0,
+                t.mister_on ? 1 : 0);
+    }
+
+    fclose(f);
+    return true;
+}
+
+bool ReptileEngine::loadGame(const char* filepath)
+{
+    FILE* f = fopen(filepath, "r");
+    if (!f) return false;
+
+    char line[512];
+
+    // Clear existing state
+    m_state.reptiles.clear();
+    m_state.terrariums.clear();
+
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "GAME=", 5) == 0) {
+            int heatwave;
+            sscanf(line + 5, "%lu,%f,%f,%f,%d",
+                   &m_state.game_day,
+                   &m_state.game_time_hours,
+                   &m_state.external_temperature,
+                   &m_state.external_humidity,
+                   &heatwave);
+            m_state.heatwave_active = (heatwave != 0);
+        }
+        else if (strncmp(line, "ECONOMY=", 8) == 0) {
+            sscanf(line + 8, "%f,%f,%f,%f",
+                   &m_state.economy.total_expenses,
+                   &m_state.economy.electricity_cost,
+                   &m_state.economy.food_cost,
+                   &m_state.economy.veterinary_cost);
+        }
+        else if (strncmp(line, "REPTILE=", 8) == 0) {
+            Reptile r;
+            char name[64], species[64];
+            int healthy, hungry, shedding;
+            sscanf(line + 8, "%lu,%63[^,],%63[^,],%f,%f,%f,%f,%f,%f,%d,%d,%d,%lu",
+                   &r.id,
+                   name,
+                   species,
+                   &r.weight_grams,
+                   &r.bone_density,
+                   &r.hydration,
+                   &r.stress_level,
+                   &r.stomach_content,
+                   &r.immune_system,
+                   &healthy,
+                   &hungry,
+                   &shedding,
+                   &r.assigned_terrarium_id);
+            r.name = name;
+            r.species = species;
+            r.is_healthy = (healthy != 0);
+            r.is_hungry = (hungry != 0);
+            r.is_shedding = (shedding != 0);
+            m_state.reptiles.push_back(r);
+
+            // Update next ID
+            if (r.id >= m_next_reptile_id) {
+                m_next_reptile_id = r.id + 1;
+            }
+        }
+        else if (strncmp(line, "TERRARIUM=", 10) == 0) {
+            Terrarium t;
+            int heater, light, mister;
+            sscanf(line + 10, "%lu,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d,%d,%d",
+                   &t.id,
+                   &t.width,
+                   &t.height,
+                   &t.depth,
+                   &t.temp_hot_zone,
+                   &t.temp_cold_zone,
+                   &t.humidity,
+                   &t.uv_index,
+                   &t.waste_level,
+                   &t.bacteria_count,
+                   &heater,
+                   &light,
+                   &mister);
+            t.heater_on = (heater != 0);
+            t.light_on = (light != 0);
+            t.mister_on = (mister != 0);
+            m_state.terrariums.push_back(t);
+
+            // Update next ID
+            if (t.id >= m_next_terrarium_id) {
+                m_next_terrarium_id = t.id + 1;
+            }
+        }
+    }
+
+    fclose(f);
+    return true;
 }
 
 // ====================================================================================
@@ -579,6 +737,28 @@ bool reptile_engine_is_reptile_hungry(uint32_t reptile_id)
 bool reptile_engine_is_reptile_healthy(uint32_t reptile_id)
 {
     return ReptileSim::ReptileEngine::getInstance().isReptileHealthy(reptile_id);
+}
+
+// Save/Load system
+bool reptile_engine_save_game(const char* filepath)
+{
+    return ReptileSim::ReptileEngine::getInstance().saveGame(filepath);
+}
+
+bool reptile_engine_load_game(const char* filepath)
+{
+    return ReptileSim::ReptileEngine::getInstance().loadGame(filepath);
+}
+
+// Add/Remove entities
+uint32_t reptile_engine_add_reptile(const char* name, const char* species)
+{
+    return ReptileSim::ReptileEngine::getInstance().addReptile(name, species);
+}
+
+uint32_t reptile_engine_add_terrarium(float width, float height, float depth)
+{
+    return ReptileSim::ReptileEngine::getInstance().addTerrarium(width, height, depth);
 }
 
 } // extern "C"
