@@ -141,6 +141,32 @@ static void ui_update_task(void *arg)
             lvgl_port_unlock();
         }
 
+        // Update terrarium screen data (if labels exist)
+        if (g_label_temp && g_label_humidity && g_label_waste) {
+            // Get real-time terrarium data from engine (terrarium ID 1)
+            float temp = reptile_engine_get_terrarium_temp(1);
+            float humidity = reptile_engine_get_terrarium_humidity(1);
+            float waste = reptile_engine_get_terrarium_waste(1);
+
+            // Format temperature with icon
+            char temp_buf[64];
+            snprintf(temp_buf, sizeof(temp_buf), LV_SYMBOL_WARNING " Temp: %.1f°C", temp);
+
+            // Format humidity with icon
+            char humidity_buf[64];
+            snprintf(humidity_buf, sizeof(humidity_buf), LV_SYMBOL_REFRESH " Humidity: %.1f%%", humidity);
+
+            // Format waste with icon
+            char waste_buf[64];
+            snprintf(waste_buf, sizeof(waste_buf), LV_SYMBOL_TRASH " Waste: %.1f%%", waste);
+
+            lvgl_port_lock(0);
+            lv_label_set_text(g_label_temp, temp_buf);
+            lv_label_set_text(g_label_humidity, humidity_buf);
+            lv_label_set_text(g_label_waste, waste_buf);
+            lvgl_port_unlock();
+        }
+
         vTaskDelayUntil(&last_wake, period);
     }
 }
@@ -266,17 +292,17 @@ static void btn_heater_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
-        ESP_LOGI(TAG, "Heater toggled");
-        // TODO: Toggle heater via C++ engine
+        // Get current state and toggle
+        bool current_state = reptile_engine_get_heater_state(1); // Terrarium ID 1
+        bool new_state = !current_state;
+        reptile_engine_set_heater(1, new_state);
+
+        ESP_LOGI(TAG, "Heater toggled: %s", new_state ? "ON" : "OFF");
+
+        // Update button label
         lv_obj_t *btn = lv_event_get_target(e);
         lv_obj_t *label = lv_obj_get_child(btn, 0);
-        // Toggle text for visual feedback
-        const char *current = lv_label_get_text(label);
-        if (strstr(current, "ON")) {
-            lv_label_set_text(label, LV_SYMBOL_POWER " Heater OFF");
-        } else {
-            lv_label_set_text(label, LV_SYMBOL_POWER " Heater ON");
-        }
+        lv_label_set_text(label, new_state ? LV_SYMBOL_POWER " Heater ON" : LV_SYMBOL_POWER " Heater OFF");
     }
 }
 
@@ -284,15 +310,17 @@ static void btn_light_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
-        ESP_LOGI(TAG, "Light toggled");
+        // Get current state and toggle
+        bool current_state = reptile_engine_get_light_state(1); // Terrarium ID 1
+        bool new_state = !current_state;
+        reptile_engine_set_light(1, new_state);
+
+        ESP_LOGI(TAG, "Light toggled: %s", new_state ? "ON" : "OFF");
+
+        // Update button label
         lv_obj_t *btn = lv_event_get_target(e);
         lv_obj_t *label = lv_obj_get_child(btn, 0);
-        const char *current = lv_label_get_text(label);
-        if (strstr(current, "ON")) {
-            lv_label_set_text(label, LV_SYMBOL_IMAGE " Light OFF");
-        } else {
-            lv_label_set_text(label, LV_SYMBOL_IMAGE " Light ON");
-        }
+        lv_label_set_text(label, new_state ? LV_SYMBOL_IMAGE " Light ON" : LV_SYMBOL_IMAGE " Light OFF");
     }
 }
 
@@ -300,15 +328,17 @@ static void btn_mister_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
-        ESP_LOGI(TAG, "Mister toggled");
+        // Get current state and toggle
+        bool current_state = reptile_engine_get_mister_state(1); // Terrarium ID 1
+        bool new_state = !current_state;
+        reptile_engine_set_mister(1, new_state);
+
+        ESP_LOGI(TAG, "Mister toggled: %s", new_state ? "ON" : "OFF");
+
+        // Update button label
         lv_obj_t *btn = lv_event_get_target(e);
         lv_obj_t *label = lv_obj_get_child(btn, 0);
-        const char *current = lv_label_get_text(label);
-        if (strstr(current, "ON")) {
-            lv_label_set_text(label, LV_SYMBOL_REFRESH " Mister OFF");
-        } else {
-            lv_label_set_text(label, LV_SYMBOL_REFRESH " Mister ON");
-        }
+        lv_label_set_text(label, new_state ? LV_SYMBOL_REFRESH " Mister ON" : LV_SYMBOL_REFRESH " Mister OFF");
     }
 }
 
@@ -316,8 +346,8 @@ static void btn_feed_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
-        ESP_LOGI(TAG, "Feed button clicked");
-        // TODO: Call reptile_engine feed function
+        reptile_engine_feed_animal(1); // Reptile ID 1
+        ESP_LOGI(TAG, "Fed animal ID 1 (+$2 food cost)");
     }
 }
 
@@ -325,8 +355,8 @@ static void btn_clean_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
-        ESP_LOGI(TAG, "Clean button clicked");
-        // TODO: Call reptile_engine clean function
+        reptile_engine_clean_terrarium(1); // Terrarium ID 1
+        ESP_LOGI(TAG, "Cleaned terrarium ID 1 (waste/bacteria reduced)");
     }
 }
 
