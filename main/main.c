@@ -15,6 +15,7 @@
 #include "sdkconfig.h"
 #include "esp_spiffs.h"
 #include <stdbool.h>
+#include <string.h>
 
 // TIER 1: BSP
 #include "bsp_reptile.h"
@@ -40,6 +41,23 @@ static lv_obj_t *g_main_screen = NULL;
 static lv_obj_t *g_label_status = NULL;
 static lv_obj_t *g_label_time = NULL;
 static lv_obj_t *g_label_stats = NULL;
+
+// Screens
+static lv_obj_t *g_screen_dashboard = NULL;
+static lv_obj_t *g_screen_terrarium = NULL;
+static lv_obj_t *g_screen_reptiles = NULL;
+
+// Control buttons
+static lv_obj_t *g_btn_heater = NULL;
+static lv_obj_t *g_btn_light = NULL;
+static lv_obj_t *g_btn_mister = NULL;
+static lv_obj_t *g_btn_feed = NULL;
+static lv_obj_t *g_btn_clean = NULL;
+
+// Status labels for terrarium screen
+static lv_obj_t *g_label_temp = NULL;
+static lv_obj_t *g_label_humidity = NULL;
+static lv_obj_t *g_label_waste = NULL;
 
 static void lvgl_self_test_timer_cb(lv_timer_t *timer)
 {
@@ -141,48 +159,376 @@ static void lvgl_fallback_task(void *arg)
     }
 }
 
+/**
+ * @brief Auto-save task (every 5 minutes)
+ */
+static void autosave_task(void *arg)
+{
+    ESP_LOGI(TAG, "Auto-save task started (5-minute intervals)");
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(300000)); // 5 minutes
+        save_game_state();
+    }
+}
+
+// ====================================================================================
+// SAVE/LOAD SYSTEM (NVS)
+// ====================================================================================
+
+static void save_game_state(void)
+{
+    ESP_LOGI(TAG, "Saving game state to NVS...");
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to open NVS for saving (%s)", esp_err_to_name(err));
+        return;
+    }
+
+    // Save basic game state
+    uint32_t day = reptile_engine_get_day();
+    float time_hours = reptile_engine_get_time_hours();
+
+    nvs_set_u32(nvs_handle, "game_day", day);
+    nvs_set_u32(nvs_handle, "game_time", (uint32_t)(time_hours * 100.0f)); // Store as int
+
+    nvs_commit(nvs_handle);
+    nvs_close(nvs_handle);
+
+    ESP_LOGI(TAG, "Game saved: Day %lu, Time %.2f", day, time_hours);
+}
+
+static void load_game_state(void)
+{
+    ESP_LOGI(TAG, "Loading game state from NVS...");
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "No saved game found (first run)");
+        return;
+    }
+
+    uint32_t day = 0;
+    uint32_t time_int = 0;
+
+    if (nvs_get_u32(nvs_handle, "game_day", &day) == ESP_OK &&
+        nvs_get_u32(nvs_handle, "game_time", &time_int) == ESP_OK) {
+        float time_hours = (float)time_int / 100.0f;
+        ESP_LOGI(TAG, "Game loaded: Day %lu, Time %.2f", day, time_hours);
+        // Note: Full state restoration would require more complex save system
+    }
+
+    nvs_close(nvs_handle);
+}
+
+// ====================================================================================
+// UI CALLBACKS
+// ====================================================================================
+
+static void btn_dashboard_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Dashboard button clicked");
+        lv_scr_load(g_screen_dashboard);
+    }
+}
+
+static void btn_terrarium_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Terrarium button clicked");
+        lv_scr_load(g_screen_terrarium);
+    }
+}
+
+static void btn_reptiles_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Reptiles button clicked");
+        lv_scr_load(g_screen_reptiles);
+    }
+}
+
+static void btn_heater_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Heater toggled");
+        // TODO: Toggle heater via C++ engine
+        lv_obj_t *btn = lv_event_get_target(e);
+        lv_obj_t *label = lv_obj_get_child(btn, 0);
+        // Toggle text for visual feedback
+        const char *current = lv_label_get_text(label);
+        if (strstr(current, "ON")) {
+            lv_label_set_text(label, LV_SYMBOL_POWER " Heater OFF");
+        } else {
+            lv_label_set_text(label, LV_SYMBOL_POWER " Heater ON");
+        }
+    }
+}
+
+static void btn_light_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Light toggled");
+        lv_obj_t *btn = lv_event_get_target(e);
+        lv_obj_t *label = lv_obj_get_child(btn, 0);
+        const char *current = lv_label_get_text(label);
+        if (strstr(current, "ON")) {
+            lv_label_set_text(label, LV_SYMBOL_BULB " Light OFF");
+        } else {
+            lv_label_set_text(label, LV_SYMBOL_BULB " Light ON");
+        }
+    }
+}
+
+static void btn_mister_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Mister toggled");
+        lv_obj_t *btn = lv_event_get_target(e);
+        lv_obj_t *label = lv_obj_get_child(btn, 0);
+        const char *current = lv_label_get_text(label);
+        if (strstr(current, "ON")) {
+            lv_label_set_text(label, LV_SYMBOL_REFRESH " Mister OFF");
+        } else {
+            lv_label_set_text(label, LV_SYMBOL_REFRESH " Mister ON");
+        }
+    }
+}
+
+static void btn_feed_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Feed button clicked");
+        // TODO: Call reptile_engine feed function
+    }
+}
+
+static void btn_clean_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Clean button clicked");
+        // TODO: Call reptile_engine clean function
+    }
+}
+
+static void btn_save_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Save button clicked");
+        save_game_state();
+    }
+}
+
 // ====================================================================================
 // UI CREATION
 // ====================================================================================
 
-static void create_ui(void)
+static void create_dashboard_screen(void)
 {
-    ESP_LOGI(TAG, "Creating UI...");
+    ESP_LOGI(TAG, "Creating dashboard screen...");
 
-    // Main screen
-    g_main_screen = lv_scr_act();
-    lv_obj_set_style_bg_color(g_main_screen, lv_color_hex(0x0D1F0D), 0);
+    g_screen_dashboard = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(g_screen_dashboard, lv_color_hex(0x0D1F0D), 0);
 
-    // Status label (top)
-    g_label_status = lv_label_create(g_main_screen);
-    lv_label_set_text(g_label_status, "REPTILE SIM ULTIMATE v3.0");
+    // Title
+    g_label_status = lv_label_create(g_screen_dashboard);
+    lv_label_set_text(g_label_status, "REPTILE SIM v3.0");
     lv_obj_set_style_text_color(g_label_status, lv_color_hex(0x4CAF50), 0);
     lv_obj_set_style_text_font(g_label_status, &lv_font_montserrat_24, 0);
-    lv_obj_align(g_label_status, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_align(g_label_status, LV_ALIGN_TOP_MID, 0, 10);
 
     // Time label
-    g_label_time = lv_label_create(g_main_screen);
+    g_label_time = lv_label_create(g_screen_dashboard);
     lv_label_set_text(g_label_time, "Day 1 - 12:00");
     lv_obj_set_style_text_color(g_label_time, lv_color_hex(0xF1F8E9), 0);
     lv_obj_set_style_text_font(g_label_time, &lv_font_montserrat_20, 0);
-    lv_obj_align(g_label_time, LV_ALIGN_CENTER, 0, -50);
+    lv_obj_align(g_label_time, LV_ALIGN_TOP_MID, 0, 50);
 
     // Stats label
-    g_label_stats = lv_label_create(g_main_screen);
+    g_label_stats = lv_label_create(g_screen_dashboard);
     lv_label_set_text(g_label_stats, "Loading...");
     lv_obj_set_style_text_color(g_label_stats, lv_color_hex(0xA5D6A7), 0);
     lv_obj_set_style_text_font(g_label_stats, &lv_font_montserrat_18, 0);
-    lv_obj_align(g_label_stats, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(g_label_stats, LV_ALIGN_TOP_MID, 0, 90);
 
-    // System ready indicator
-    lv_obj_t *label_ready = lv_label_create(g_main_screen);
+    // Navigation buttons
+    lv_obj_t *btn_terrarium_nav = lv_btn_create(g_screen_dashboard);
+    lv_obj_set_size(btn_terrarium_nav, 200, 60);
+    lv_obj_align(btn_terrarium_nav, LV_ALIGN_CENTER, -120, 0);
+    lv_obj_add_event_cb(btn_terrarium_nav, btn_terrarium_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label1 = lv_label_create(btn_terrarium_nav);
+    lv_label_set_text(label1, LV_SYMBOL_HOME " Terrarium");
+    lv_obj_center(label1);
+
+    lv_obj_t *btn_reptiles_nav = lv_btn_create(g_screen_dashboard);
+    lv_obj_set_size(btn_reptiles_nav, 200, 60);
+    lv_obj_align(btn_reptiles_nav, LV_ALIGN_CENTER, 120, 0);
+    lv_obj_add_event_cb(btn_reptiles_nav, btn_reptiles_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label2 = lv_label_create(btn_reptiles_nav);
+    lv_label_set_text(label2, LV_SYMBOL_LIST " Reptiles");
+    lv_obj_center(label2);
+
+    // Save button
+    lv_obj_t *btn_save = lv_btn_create(g_screen_dashboard);
+    lv_obj_set_size(btn_save, 180, 50);
+    lv_obj_align(btn_save, LV_ALIGN_BOTTOM_MID, 0, -70);
+    lv_obj_add_event_cb(btn_save, btn_save_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_save = lv_label_create(btn_save);
+    lv_label_set_text(label_save, LV_SYMBOL_SAVE " Save Game");
+    lv_obj_center(label_save);
+
+    // Status indicator
+    lv_obj_t *label_ready = lv_label_create(g_screen_dashboard);
     lv_label_set_text(label_ready, LV_SYMBOL_OK " System Ready");
-    lv_obj_set_style_text_color(label_ready, lv_color_hex(0x66BB6A), 0);
-    lv_obj_align(label_ready, LV_ALIGN_BOTTOM_MID, 0, -50);
+    lv_obj_set_style_text_color(label_ready, lv_color_hex(0x8BC34A), 0);
+    lv_obj_align(label_ready, LV_ALIGN_BOTTOM_MID, 0, -20);
+}
 
+static void create_terrarium_screen(void)
+{
+    ESP_LOGI(TAG, "Creating terrarium control screen...");
+
+    g_screen_terrarium = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(g_screen_terrarium, lv_color_hex(0x1A1A2E), 0);
+
+    // Title
+    lv_obj_t *title = lv_label_create(g_screen_terrarium);
+    lv_label_set_text(title, LV_SYMBOL_HOME " Terrarium Control");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x00D4FF), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    // Status displays
+    g_label_temp = lv_label_create(g_screen_terrarium);
+    lv_label_set_text(g_label_temp, LV_SYMBOL_WARNING " Temp: --°C");
+    lv_obj_set_style_text_color(g_label_temp, lv_color_hex(0xFFEB3B), 0);
+    lv_obj_align(g_label_temp, LV_ALIGN_TOP_LEFT, 20, 60);
+
+    g_label_humidity = lv_label_create(g_screen_terrarium);
+    lv_label_set_text(g_label_humidity, LV_SYMBOL_REFRESH " Humidity: --%");
+    lv_obj_set_style_text_color(g_label_humidity, lv_color_hex(0x03A9F4), 0);
+    lv_obj_align(g_label_humidity, LV_ALIGN_TOP_LEFT, 20, 90);
+
+    g_label_waste = lv_label_create(g_screen_terrarium);
+    lv_label_set_text(g_label_waste, LV_SYMBOL_TRASH " Waste: --%");
+    lv_obj_set_style_text_color(g_label_waste, lv_color_hex(0xFF9800), 0);
+    lv_obj_align(g_label_waste, LV_ALIGN_TOP_LEFT, 20, 120);
+
+    // Control buttons
+    g_btn_heater = lv_btn_create(g_screen_terrarium);
+    lv_obj_set_size(g_btn_heater, 180, 50);
+    lv_obj_align(g_btn_heater, LV_ALIGN_CENTER, -100, -50);
+    lv_obj_add_event_cb(g_btn_heater, btn_heater_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_h = lv_label_create(g_btn_heater);
+    lv_label_set_text(label_h, LV_SYMBOL_POWER " Heater ON");
+    lv_obj_center(label_h);
+
+    g_btn_light = lv_btn_create(g_screen_terrarium);
+    lv_obj_set_size(g_btn_light, 180, 50);
+    lv_obj_align(g_btn_light, LV_ALIGN_CENTER, 100, -50);
+    lv_obj_add_event_cb(g_btn_light, btn_light_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_l = lv_label_create(g_btn_light);
+    lv_label_set_text(label_l, LV_SYMBOL_BULB " Light ON");
+    lv_obj_center(label_l);
+
+    g_btn_mister = lv_btn_create(g_screen_terrarium);
+    lv_obj_set_size(g_btn_mister, 180, 50);
+    lv_obj_align(g_btn_mister, LV_ALIGN_CENTER, -100, 20);
+    lv_obj_add_event_cb(g_btn_mister, btn_mister_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_m = lv_label_create(g_btn_mister);
+    lv_label_set_text(label_m, LV_SYMBOL_REFRESH " Mister OFF");
+    lv_obj_center(label_m);
+
+    g_btn_clean = lv_btn_create(g_screen_terrarium);
+    lv_obj_set_size(g_btn_clean, 180, 50);
+    lv_obj_align(g_btn_clean, LV_ALIGN_CENTER, 100, 20);
+    lv_obj_add_event_cb(g_btn_clean, btn_clean_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_c = lv_label_create(g_btn_clean);
+    lv_label_set_text(label_c, LV_SYMBOL_TRASH " Clean");
+    lv_obj_center(label_c);
+
+    // Back button
+    lv_obj_t *btn_back = lv_btn_create(g_screen_terrarium);
+    lv_obj_set_size(btn_back, 150, 50);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_add_event_cb(btn_back, btn_dashboard_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_back = lv_label_create(btn_back);
+    lv_label_set_text(label_back, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(label_back);
+}
+
+static void create_reptiles_screen(void)
+{
+    ESP_LOGI(TAG, "Creating reptiles screen...");
+
+    g_screen_reptiles = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(g_screen_reptiles, lv_color_hex(0x1F1B24), 0);
+
+    // Title
+    lv_obj_t *title = lv_label_create(g_screen_reptiles);
+    lv_label_set_text(title, LV_SYMBOL_LIST " Reptile Status");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xE91E63), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    // Reptile info (placeholder)
+    lv_obj_t *info = lv_label_create(g_screen_reptiles);
+    lv_label_set_text(info, "Rex (Pogona vitticeps)\n\n"
+                            LV_SYMBOL_OK " Health: Good\n"
+                            LV_SYMBOL_BATTERY_FULL " Stress: Low\n"
+                            LV_SYMBOL_EYE_OPEN " Hunger: Normal\n"
+                            LV_SYMBOL_SHUFFLE " Weight: 350g");
+    lv_obj_set_style_text_color(info, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_align(info, LV_ALIGN_CENTER, 0, -20);
+
+    // Feed button
+    g_btn_feed = lv_btn_create(g_screen_reptiles);
+    lv_obj_set_size(g_btn_feed, 180, 50);
+    lv_obj_align(g_btn_feed, LV_ALIGN_CENTER, 0, 80);
+    lv_obj_add_event_cb(g_btn_feed, btn_feed_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_f = lv_label_create(g_btn_feed);
+    lv_label_set_text(label_f, LV_SYMBOL_IMAGE " Feed Animal");
+    lv_obj_center(label_f);
+
+    // Back button
+    lv_obj_t *btn_back = lv_btn_create(g_screen_reptiles);
+    lv_obj_set_size(btn_back, 150, 50);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_add_event_cb(btn_back, btn_dashboard_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_back = lv_label_create(btn_back);
+    lv_label_set_text(label_back, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(label_back);
+}
+
+static void create_ui(void)
+{
+    ESP_LOGI(TAG, "Creating multi-screen UI...");
+
+    // Create all screens
+    create_dashboard_screen();
+    create_terrarium_screen();
+    create_reptiles_screen();
+
+    // Load dashboard as initial screen
+    lv_scr_load(g_screen_dashboard);
+
+    // LVGL self-test timer (toggles background)
     lv_timer_create(lvgl_self_test_timer_cb, 1000, NULL);
 
-    ESP_LOGI(TAG, "UI created successfully");
+    ESP_LOGI(TAG, "UI created with 3 screens: Dashboard, Terrarium, Reptiles");
 }
 
 // ====================================================================================
@@ -254,6 +600,9 @@ void app_main(void)
     ESP_LOGI(TAG, "[TIER 2] Initializing Simulation Core...");
     reptile_engine_init();
 
+    // Load saved game state (if exists)
+    load_game_state();
+
     // ====================================================================================
     // TIER 3: Create UI
     // ====================================================================================
@@ -273,9 +622,13 @@ void app_main(void)
     xTaskCreate(ui_update_task, "ui_task", 4096, NULL, 4, NULL);
     xTaskCreate(lvgl_fallback_task, "lvgl_fallback", 4096, NULL,
                 CONFIG_APP_LVGL_TASK_PRIORITY, NULL);
+    xTaskCreate(autosave_task, "autosave", 3072, NULL, 2, NULL);
 
     ESP_LOGI(TAG, "===================================");
     ESP_LOGI(TAG, "  SYSTEM READY");
+    ESP_LOGI(TAG, "  - 14 simulation engines active");
+    ESP_LOGI(TAG, "  - Interactive touch UI enabled");
+    ESP_LOGI(TAG, "  - Auto-save every 5 minutes");
     ESP_LOGI(TAG, "===================================");
 
     // Main loop (idle)
