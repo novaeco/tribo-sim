@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
+#include "esp_spiffs.h"
 #include <stdbool.h>
 
 // TIER 1: BSP
@@ -226,6 +227,25 @@ void app_main(void)
 
     // SD Card (optional)
     bsp_sdcard_mount(); // Non-critical
+
+    // SPIFFS (for game saves)
+    ESP_LOGI(TAG, "Mounting SPIFFS...");
+    esp_vfs_spiffs_conf_t spiffs_conf = {
+        .base_path = "/storage",
+        .partition_label = "storage",
+        .max_files = 5,
+        .format_if_mount_failed = true
+    };
+    esp_err_t ret_spiffs = esp_vfs_spiffs_register(&spiffs_conf);
+    if (ret_spiffs != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to mount SPIFFS (%s)", esp_err_to_name(ret_spiffs));
+    } else {
+        size_t total = 0, used = 0;
+        ret_spiffs = esp_spiffs_info("storage", &total, &used);
+        if (ret_spiffs == ESP_OK) {
+            ESP_LOGI(TAG, "SPIFFS: %d KB total, %d KB used", total / 1024, used / 1024);
+        }
+    }
 
     // ====================================================================================
     // TIER 2: Initialize Simulation Core (C++)

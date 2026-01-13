@@ -73,12 +73,21 @@ private:
     uint32_t m_next_reptile_id = 1;
     uint32_t m_next_terrarium_id = 1;
 
-    // Private engine update methods
+    // Private engine update methods (14 simulation engines)
     void updatePhysics(float dt);
     void updateBiology(float dt);
     void updateNutrition(float dt);
     void updateSanitary(float dt);
     void updateEconomy(float dt);
+    void updateBehavior(float dt);
+    void updateGenetics(float dt);
+    void updateReproduction(float dt);
+    void updateSocial(float dt);
+    void updateSeasonal(float dt);
+    void updateSecurity(float dt);
+    void updateTechnical(float dt);
+    void updateAdmin(float dt);
+    void updateWeather(float dt);
 };
 
 } // namespace ReptileSim

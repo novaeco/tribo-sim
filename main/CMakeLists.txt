@@ -1,8 +1,6 @@
 idf_component_register(
     SRCS
         "main.c"
-        "app_tasks.c"
-        "ui_bridge.c"
     INCLUDE_DIRS
         "."
     REQUIRES
@@ -11,4 +9,5 @@ idf_component_register(
         reptile_core
         lvgl
         esp_lvgl_port
+        spiffs
 )
