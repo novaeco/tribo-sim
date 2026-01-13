@@ -59,6 +59,13 @@ static lv_obj_t *g_label_temp = NULL;
 static lv_obj_t *g_label_humidity = NULL;
 static lv_obj_t *g_label_waste = NULL;
 
+// ====================================================================================
+// FORWARD DECLARATIONS
+// ====================================================================================
+
+static void save_game_state(void);
+static void load_game_state(void);
+
 static void lvgl_self_test_timer_cb(lv_timer_t *timer)
 {
     LV_UNUSED(timer);
@@ -282,9 +289,9 @@ static void btn_light_cb(lv_event_t *e)
         lv_obj_t *label = lv_obj_get_child(btn, 0);
         const char *current = lv_label_get_text(label);
         if (strstr(current, "ON")) {
-            lv_label_set_text(label, LV_SYMBOL_BULB " Light OFF");
+            lv_label_set_text(label, LV_SYMBOL_IMAGE " Light OFF");
         } else {
-            lv_label_set_text(label, LV_SYMBOL_BULB " Light ON");
+            lv_label_set_text(label, LV_SYMBOL_IMAGE " Light ON");
         }
     }
 }
@@ -441,7 +448,7 @@ static void create_terrarium_screen(void)
     lv_obj_align(g_btn_light, LV_ALIGN_CENTER, 100, -50);
     lv_obj_add_event_cb(g_btn_light, btn_light_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *label_l = lv_label_create(g_btn_light);
-    lv_label_set_text(label_l, LV_SYMBOL_BULB " Light ON");
+    lv_label_set_text(label_l, LV_SYMBOL_IMAGE " Light ON");
     lv_obj_center(label_l);
 
     g_btn_mister = lv_btn_create(g_screen_terrarium);
