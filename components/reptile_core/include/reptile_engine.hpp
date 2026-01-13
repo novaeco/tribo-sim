@@ -39,6 +39,18 @@ public:
      */
     const GameState& getState() const { return m_state; }
 
+    /**
+     * @brief Save complete game state to SPIFFS
+     * @return true if successful
+     */
+    bool saveGame(const char* filepath);
+
+    /**
+     * @brief Load complete game state from SPIFFS
+     * @return true if successful
+     */
+    bool loadGame(const char* filepath);
+
     // ====================================================================================
     // PLAYER ACTIONS
     // ====================================================================================
@@ -204,6 +216,14 @@ float reptile_engine_get_reptile_stress(uint32_t reptile_id);
 float reptile_engine_get_reptile_weight(uint32_t reptile_id);
 bool reptile_engine_is_reptile_hungry(uint32_t reptile_id);
 bool reptile_engine_is_reptile_healthy(uint32_t reptile_id);
+
+// Save/Load system
+bool reptile_engine_save_game(const char* filepath);
+bool reptile_engine_load_game(const char* filepath);
+
+// Add/Remove entities
+uint32_t reptile_engine_add_reptile(const char* name, const char* species);
+uint32_t reptile_engine_add_terrarium(float width, float height, float depth);
 
 #ifdef __cplusplus
 }

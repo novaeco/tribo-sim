@@ -59,6 +59,17 @@ static lv_obj_t *g_label_temp = NULL;
 static lv_obj_t *g_label_humidity = NULL;
 static lv_obj_t *g_label_waste = NULL;
 
+// Alert message box
+static lv_obj_t *g_alert_msgbox = NULL;
+
+// Multi-terrarium management
+static uint32_t g_selected_terrarium_id = 1;
+static lv_obj_t *g_terrarium_list = NULL;
+
+// Multi-reptile management
+static uint32_t g_selected_reptile_id = 1;
+static lv_obj_t *g_reptile_list = NULL;
+
 // ====================================================================================
 // FORWARD DECLARATIONS
 // ====================================================================================
@@ -144,9 +155,9 @@ static void ui_update_task(void *arg)
         // Update terrarium screen data (if labels exist)
         if (g_label_temp && g_label_humidity && g_label_waste) {
             // Get real-time terrarium data from engine (terrarium ID 1)
-            float temp = reptile_engine_get_terrarium_temp(1);
-            float humidity = reptile_engine_get_terrarium_humidity(1);
-            float waste = reptile_engine_get_terrarium_waste(1);
+            float temp = reptile_engine_get_terrarium_temp(g_selected_terrarium_id);
+            float humidity = reptile_engine_get_terrarium_humidity(g_selected_terrarium_id);
+            float waste = reptile_engine_get_terrarium_waste(g_selected_terrarium_id);
 
             // Format temperature with icon
             char temp_buf[64];
@@ -165,6 +176,57 @@ static void ui_update_task(void *arg)
             lv_label_set_text(g_label_humidity, humidity_buf);
             lv_label_set_text(g_label_waste, waste_buf);
             lvgl_port_unlock();
+
+            // Check for critical conditions (alert every 30 seconds to avoid spam)
+            static uint32_t last_alert_tick = 0;
+            uint32_t now_tick = xTaskGetTickCount();
+            if ((now_tick - last_alert_tick) > pdMS_TO_TICKS(30000)) { // 30 seconds
+                // Temperature alerts
+                if (temp > 38.0f) {
+                    lvgl_port_lock(0);
+                    show_alert(ALERT_CRITICAL, "DANGER!", "Temperature too high!\nRisk of overheating.");
+                    lvgl_port_unlock();
+                    last_alert_tick = now_tick;
+                }
+                else if (temp < 20.0f) {
+                    lvgl_port_lock(0);
+                    show_alert(ALERT_WARNING, "Warning", "Temperature too low!\nTurn on heater.");
+                    lvgl_port_unlock();
+                    last_alert_tick = now_tick;
+                }
+                // Waste level alerts
+                else if (waste > 80.0f) {
+                    lvgl_port_lock(0);
+                    show_alert(ALERT_WARNING, "Sanitation Alert", "Waste level critical!\nClean terrarium now.");
+                    lvgl_port_unlock();
+                    last_alert_tick = now_tick;
+                }
+                // Reptile health alerts
+                else if (reptile_count > 0) {
+                    float stress = reptile_engine_get_reptile_stress(1);
+                    bool hungry = reptile_engine_is_reptile_hungry(1);
+                    bool healthy = reptile_engine_is_reptile_healthy(1);
+
+                    if (!healthy) {
+                        lvgl_port_lock(0);
+                        show_alert(ALERT_CRITICAL, "HEALTH CRISIS!", "Animal is sick!\nCheck conditions immediately.");
+                        lvgl_port_unlock();
+                        last_alert_tick = now_tick;
+                    }
+                    else if (stress > 80.0f) {
+                        lvgl_port_lock(0);
+                        show_alert(ALERT_WARNING, "Stress Alert", "Animal is very stressed!\nImprove habitat conditions.");
+                        lvgl_port_unlock();
+                        last_alert_tick = now_tick;
+                    }
+                    else if (hungry) {
+                        lvgl_port_lock(0);
+                        show_alert(ALERT_INFO, "Feeding Time", "Animal is hungry.\nFeed your reptile.");
+                        lvgl_port_unlock();
+                        last_alert_tick = now_tick;
+                    }
+                }
+            }
         }
 
         vTaskDelayUntil(&last_wake, period);
@@ -206,55 +268,91 @@ static void autosave_task(void *arg)
 }
 
 // ====================================================================================
-// SAVE/LOAD SYSTEM (NVS)
+// SAVE/LOAD SYSTEM (SPIFFS - Complete State)
 // ====================================================================================
 
 static void save_game_state(void)
 {
-    ESP_LOGI(TAG, "Saving game state to NVS...");
+    ESP_LOGI(TAG, "Saving complete game state to SPIFFS...");
 
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to open NVS for saving (%s)", esp_err_to_name(err));
-        return;
+    bool success = reptile_engine_save_game("/spiffs/savegame.txt");
+    if (success) {
+        ESP_LOGI(TAG, "Game saved successfully (reptiles, terrariums, economy)");
+    } else {
+        ESP_LOGW(TAG, "Failed to save game state");
     }
-
-    // Save basic game state
-    uint32_t day = reptile_engine_get_day();
-    float time_hours = reptile_engine_get_time_hours();
-
-    nvs_set_u32(nvs_handle, "game_day", day);
-    nvs_set_u32(nvs_handle, "game_time", (uint32_t)(time_hours * 100.0f)); // Store as int
-
-    nvs_commit(nvs_handle);
-    nvs_close(nvs_handle);
-
-    ESP_LOGI(TAG, "Game saved: Day %lu, Time %.2f", day, time_hours);
 }
 
 static void load_game_state(void)
 {
-    ESP_LOGI(TAG, "Loading game state from NVS...");
+    ESP_LOGI(TAG, "Loading complete game state from SPIFFS...");
 
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
-    if (err != ESP_OK) {
+    bool success = reptile_engine_load_game("/spiffs/savegame.txt");
+    if (success) {
+        ESP_LOGI(TAG, "Game loaded successfully");
+    } else {
         ESP_LOGI(TAG, "No saved game found (first run)");
-        return;
+    }
+}
+
+// ====================================================================================
+// ALERT SYSTEM
+// ====================================================================================
+
+typedef enum {
+    ALERT_INFO,
+    ALERT_WARNING,
+    ALERT_CRITICAL
+} alert_type_t;
+
+static void alert_msgbox_close_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        lv_msgbox_close(g_alert_msgbox);
+        g_alert_msgbox = NULL;
+    }
+}
+
+static void show_alert(alert_type_t type, const char *title, const char *message)
+{
+    // Close previous alert if exists
+    if (g_alert_msgbox) {
+        lv_msgbox_close(g_alert_msgbox);
     }
 
-    uint32_t day = 0;
-    uint32_t time_int = 0;
-
-    if (nvs_get_u32(nvs_handle, "game_day", &day) == ESP_OK &&
-        nvs_get_u32(nvs_handle, "game_time", &time_int) == ESP_OK) {
-        float time_hours = (float)time_int / 100.0f;
-        ESP_LOGI(TAG, "Game loaded: Day %lu, Time %.2f", day, time_hours);
-        // Note: Full state restoration would require more complex save system
+    // Choose color based on alert type
+    lv_color_t title_color;
+    switch (type) {
+        case ALERT_CRITICAL:
+            title_color = lv_color_hex(0xFF0000); // Red
+            break;
+        case ALERT_WARNING:
+            title_color = lv_color_hex(0xFFA500); // Orange
+            break;
+        case ALERT_INFO:
+        default:
+            title_color = lv_color_hex(0x00FF00); // Green
+            break;
     }
 
-    nvs_close(nvs_handle);
+    // Create message box
+    static const char *btns[] = {"OK", ""};
+    g_alert_msgbox = lv_msgbox_create(NULL, title, message, btns, false);
+    lv_obj_set_style_bg_color(g_alert_msgbox, lv_color_hex(0x1F1B24), 0);
+
+    // Style title
+    lv_obj_t *title_label = lv_msgbox_get_title(g_alert_msgbox);
+    lv_obj_set_style_text_color(title_label, title_color, 0);
+
+    // Style content
+    lv_obj_t *content_label = lv_msgbox_get_text(g_alert_msgbox);
+    lv_obj_set_style_text_color(content_label, lv_color_hex(0xCCCCCC), 0);
+
+    // Add close callback
+    lv_obj_add_event_cb(g_alert_msgbox, alert_msgbox_close_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    ESP_LOGI(TAG, "Alert shown: [%s] %s", title, message);
 }
 
 // ====================================================================================
@@ -293,9 +391,9 @@ static void btn_heater_cb(lv_event_t *e)
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
         // Get current state and toggle
-        bool current_state = reptile_engine_get_heater_state(1); // Terrarium ID 1
+        bool current_state = reptile_engine_get_heater_state(g_selected_terrarium_id); // Terrarium ID 1
         bool new_state = !current_state;
-        reptile_engine_set_heater(1, new_state);
+        reptile_engine_set_heater(g_selected_terrarium_id, new_state);
 
         ESP_LOGI(TAG, "Heater toggled: %s", new_state ? "ON" : "OFF");
 
@@ -311,9 +409,9 @@ static void btn_light_cb(lv_event_t *e)
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
         // Get current state and toggle
-        bool current_state = reptile_engine_get_light_state(1); // Terrarium ID 1
+        bool current_state = reptile_engine_get_light_state(g_selected_terrarium_id); // Terrarium ID 1
         bool new_state = !current_state;
-        reptile_engine_set_light(1, new_state);
+        reptile_engine_set_light(g_selected_terrarium_id, new_state);
 
         ESP_LOGI(TAG, "Light toggled: %s", new_state ? "ON" : "OFF");
 
@@ -329,9 +427,9 @@ static void btn_mister_cb(lv_event_t *e)
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
         // Get current state and toggle
-        bool current_state = reptile_engine_get_mister_state(1); // Terrarium ID 1
+        bool current_state = reptile_engine_get_mister_state(g_selected_terrarium_id); // Terrarium ID 1
         bool new_state = !current_state;
-        reptile_engine_set_mister(1, new_state);
+        reptile_engine_set_mister(g_selected_terrarium_id, new_state);
 
         ESP_LOGI(TAG, "Mister toggled: %s", new_state ? "ON" : "OFF");
 
@@ -346,7 +444,7 @@ static void btn_feed_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
-        reptile_engine_feed_animal(1); // Reptile ID 1
+        reptile_engine_feed_animal(g_selected_reptile_id); // Reptile ID 1
         ESP_LOGI(TAG, "Fed animal ID 1 (+$2 food cost)");
     }
 }
@@ -355,8 +453,80 @@ static void btn_clean_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
-        reptile_engine_clean_terrarium(1); // Terrarium ID 1
-        ESP_LOGI(TAG, "Cleaned terrarium ID 1 (waste/bacteria reduced)");
+        reptile_engine_clean_terrarium(g_selected_terrarium_id);
+        ESP_LOGI(TAG, "Cleaned terrarium ID %lu (waste/bacteria reduced)", g_selected_terrarium_id);
+    }
+}
+
+static void btn_add_terrarium_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        uint32_t new_id = reptile_engine_add_terrarium(120.0f, 60.0f, 60.0f);
+        ESP_LOGI(TAG, "Added terrarium ID %lu (120x60x60 cm)", new_id);
+
+        lvgl_port_lock(0);
+        show_alert(ALERT_INFO, "Success", "New terrarium added!");
+        lvgl_port_unlock();
+    }
+}
+
+static void btn_add_reptile_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        uint32_t new_id = reptile_engine_add_reptile("New Reptile", "Pogona vitticeps");
+        ESP_LOGI(TAG, "Added reptile ID %lu (Pogona vitticeps)", new_id);
+
+        lvgl_port_lock(0);
+        show_alert(ALERT_INFO, "Success", "New reptile added!");
+        lvgl_port_unlock();
+    }
+}
+
+static void btn_terrarium_prev_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        if (g_selected_terrarium_id > 1) {
+            g_selected_terrarium_id--;
+            ESP_LOGI(TAG, "Selected terrarium ID %lu", g_selected_terrarium_id);
+        }
+    }
+}
+
+static void btn_terrarium_next_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        int count = reptile_engine_get_terrarium_count();
+        if (g_selected_terrarium_id < (uint32_t)count) {
+            g_selected_terrarium_id++;
+            ESP_LOGI(TAG, "Selected terrarium ID %lu", g_selected_terrarium_id);
+        }
+    }
+}
+
+static void btn_reptile_prev_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        if (g_selected_reptile_id > 1) {
+            g_selected_reptile_id--;
+            ESP_LOGI(TAG, "Selected reptile ID %lu", g_selected_reptile_id);
+        }
+    }
+}
+
+static void btn_reptile_next_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        int count = reptile_engine_get_reptile_count();
+        if (g_selected_reptile_id < (uint32_t)count) {
+            g_selected_reptile_id++;
+            ESP_LOGI(TAG, "Selected reptile ID %lu", g_selected_reptile_id);
+        }
     }
 }
 
@@ -448,21 +618,54 @@ static void create_terrarium_screen(void)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
 
+    // Navigation: Previous button
+    lv_obj_t *btn_prev = lv_btn_create(g_screen_terrarium);
+    lv_obj_set_size(btn_prev, 80, 40);
+    lv_obj_align(btn_prev, LV_ALIGN_TOP_LEFT, 10, 45);
+    lv_obj_add_event_cb(btn_prev, btn_terrarium_prev_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_prev = lv_label_create(btn_prev);
+    lv_label_set_text(label_prev, LV_SYMBOL_LEFT);
+    lv_obj_center(label_prev);
+
+    // Terrarium selector label (will be updated dynamically)
+    lv_obj_t *label_selector = lv_label_create(g_screen_terrarium);
+    lv_label_set_text(label_selector, "Terrarium 1/1");
+    lv_obj_set_style_text_color(label_selector, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(label_selector, LV_ALIGN_TOP_MID, 0, 50);
+
+    // Navigation: Next button
+    lv_obj_t *btn_next = lv_btn_create(g_screen_terrarium);
+    lv_obj_set_size(btn_next, 80, 40);
+    lv_obj_align(btn_next, LV_ALIGN_TOP_RIGHT, -10, 45);
+    lv_obj_add_event_cb(btn_next, btn_terrarium_next_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_next = lv_label_create(btn_next);
+    lv_label_set_text(label_next, LV_SYMBOL_RIGHT);
+    lv_obj_center(label_next);
+
+    // Add Terrarium button
+    lv_obj_t *btn_add = lv_btn_create(g_screen_terrarium);
+    lv_obj_set_size(btn_add, 150, 40);
+    lv_obj_align(btn_add, LV_ALIGN_TOP_MID, 0, 95);
+    lv_obj_add_event_cb(btn_add, btn_add_terrarium_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_add = lv_label_create(btn_add);
+    lv_label_set_text(label_add, LV_SYMBOL_PLUS " Add");
+    lv_obj_center(label_add);
+
     // Status displays
     g_label_temp = lv_label_create(g_screen_terrarium);
     lv_label_set_text(g_label_temp, LV_SYMBOL_WARNING " Temp: --°C");
     lv_obj_set_style_text_color(g_label_temp, lv_color_hex(0xFFEB3B), 0);
-    lv_obj_align(g_label_temp, LV_ALIGN_TOP_LEFT, 20, 60);
+    lv_obj_align(g_label_temp, LV_ALIGN_TOP_LEFT, 20, 145);
 
     g_label_humidity = lv_label_create(g_screen_terrarium);
     lv_label_set_text(g_label_humidity, LV_SYMBOL_REFRESH " Humidity: --%");
     lv_obj_set_style_text_color(g_label_humidity, lv_color_hex(0x03A9F4), 0);
-    lv_obj_align(g_label_humidity, LV_ALIGN_TOP_LEFT, 20, 90);
+    lv_obj_align(g_label_humidity, LV_ALIGN_TOP_LEFT, 20, 175);
 
     g_label_waste = lv_label_create(g_screen_terrarium);
     lv_label_set_text(g_label_waste, LV_SYMBOL_TRASH " Waste: --%");
     lv_obj_set_style_text_color(g_label_waste, lv_color_hex(0xFF9800), 0);
-    lv_obj_align(g_label_waste, LV_ALIGN_TOP_LEFT, 20, 120);
+    lv_obj_align(g_label_waste, LV_ALIGN_TOP_LEFT, 20, 205);
 
     // Control buttons
     g_btn_heater = lv_btn_create(g_screen_terrarium);
@@ -521,15 +724,44 @@ static void create_reptiles_screen(void)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
 
-    // Reptile info (placeholder)
+    // Navigation: Previous button
+    lv_obj_t *btn_prev = lv_btn_create(g_screen_reptiles);
+    lv_obj_set_size(btn_prev, 80, 40);
+    lv_obj_align(btn_prev, LV_ALIGN_TOP_LEFT, 10, 45);
+    lv_obj_add_event_cb(btn_prev, btn_reptile_prev_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_prev = lv_label_create(btn_prev);
+    lv_label_set_text(label_prev, LV_SYMBOL_LEFT);
+    lv_obj_center(label_prev);
+
+    // Reptile selector label (will be updated dynamically)
+    lv_obj_t *label_selector = lv_label_create(g_screen_reptiles);
+    lv_label_set_text(label_selector, "Reptile 1/1");
+    lv_obj_set_style_text_color(label_selector, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(label_selector, LV_ALIGN_TOP_MID, 0, 50);
+
+    // Navigation: Next button
+    lv_obj_t *btn_next = lv_btn_create(g_screen_reptiles);
+    lv_obj_set_size(btn_next, 80, 40);
+    lv_obj_align(btn_next, LV_ALIGN_TOP_RIGHT, -10, 45);
+    lv_obj_add_event_cb(btn_next, btn_reptile_next_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_next = lv_label_create(btn_next);
+    lv_label_set_text(label_next, LV_SYMBOL_RIGHT);
+    lv_obj_center(label_next);
+
+    // Add Reptile button
+    lv_obj_t *btn_add = lv_btn_create(g_screen_reptiles);
+    lv_obj_set_size(btn_add, 150, 40);
+    lv_obj_align(btn_add, LV_ALIGN_TOP_MID, 0, 95);
+    lv_obj_add_event_cb(btn_add, btn_add_reptile_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_add = lv_label_create(btn_add);
+    lv_label_set_text(label_add, LV_SYMBOL_PLUS " Add");
+    lv_obj_center(label_add);
+
+    // Reptile info (placeholder - will be updated dynamically)
     lv_obj_t *info = lv_label_create(g_screen_reptiles);
-    lv_label_set_text(info, "Rex (Pogona vitticeps)\n\n"
-                            LV_SYMBOL_OK " Health: Good\n"
-                            LV_SYMBOL_BATTERY_FULL " Stress: Low\n"
-                            LV_SYMBOL_EYE_OPEN " Hunger: Normal\n"
-                            LV_SYMBOL_SHUFFLE " Weight: 350g");
+    lv_label_set_text(info, "Loading reptile data...");
     lv_obj_set_style_text_color(info, lv_color_hex(0xCCCCCC), 0);
-    lv_obj_align(info, LV_ALIGN_CENTER, 0, -20);
+    lv_obj_align(info, LV_ALIGN_CENTER, 0, 10);
 
     // Feed button
     g_btn_feed = lv_btn_create(g_screen_reptiles);
