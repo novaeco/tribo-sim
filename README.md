@@ -25,7 +25,7 @@ More than a game, REPTILE SIM is a portable laboratory that simulates invisible 
 |-----------|-------------|
 | MCU | ESP32-P4 (Dual Core + LP Core, 360MHz) |
 | Display | 7" 1024x600 MIPI-DSI (JD9165BA) |
-| Touch | GT911 (I2C: GPIO7/GPIO8) |
+| Touch | GT911 (I2C: GPIO22/GPIO23) |
 | WiFi | ESP32-C6 co-processor (🚧 planned) |
 | Storage | MicroSD (SDMMC Slot 0) for saves |
 

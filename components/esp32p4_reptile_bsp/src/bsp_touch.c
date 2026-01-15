@@ -53,9 +53,9 @@ esp_err_t bsp_touch_init(lv_indev_t **indev, lv_display_t *disp)
             .interrupt = 0,
         },
         .flags = {
-            .swap_xy = 0,
-            .mirror_x = 0,
-            .mirror_y = 0,
+            .swap_xy = BSP_TOUCH_SWAP_XY,
+            .mirror_x = BSP_TOUCH_MIRROR_X,
+            .mirror_y = BSP_TOUCH_MIRROR_Y,
         },
     };
 
