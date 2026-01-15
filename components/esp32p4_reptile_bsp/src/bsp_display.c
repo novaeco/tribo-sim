@@ -29,9 +29,9 @@ static const char *TAG = "BSP_DISPLAY";
 // EXACT TIMING PARAMETERS (TESTED & WORKING)
 // ====================================================================================
 
-#define DSI_LANE_NUM            2
-#define DSI_LANE_BITRATE_MBPS   800
-#define DPI_CLOCK_MHZ           51
+#define DSI_LANE_NUM            BSP_DSI_LANE_NUM
+#define DSI_LANE_BITRATE_MBPS   BSP_DSI_LANE_BITRATE_MBPS
+#define DPI_CLOCK_MHZ           ((BSP_LCD_PCLK_HZ + 500000) / 1000000)
 #define DSI_PHY_LDO_CHANNEL     3
 #define DSI_PHY_VOLTAGE_MV      2500
 
@@ -122,12 +122,12 @@ esp_err_t bsp_display_init(lv_display_t **disp)
         .video_timing = {
             .h_size = BSP_LCD_H_RES,
             .v_size = BSP_LCD_V_RES,
-            .hsync_back_porch = 136,
-            .hsync_pulse_width = 24,
-            .hsync_front_porch = 160,
-            .vsync_back_porch = 21,
-            .vsync_pulse_width = 2,
-            .vsync_front_porch = 12,
+            .hsync_back_porch = BSP_LCD_HBP,
+            .hsync_pulse_width = BSP_LCD_HSYNC_PW,
+            .hsync_front_porch = BSP_LCD_HFP,
+            .vsync_back_porch = BSP_LCD_VBP,
+            .vsync_pulse_width = BSP_LCD_VSYNC_PW,
+            .vsync_front_porch = BSP_LCD_VFP,
         },
     };
 

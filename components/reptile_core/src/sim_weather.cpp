@@ -17,8 +17,8 @@ namespace ReptileSim {
  * - Storm impacts on power grid
  *
  * NOTE: Full implementation requires:
- * - ESP32-C6 coprocessor for WiFi
- * - Weather API credentials (OpenWeatherMap, etc.)
+ * - Network stack on ESP32-P4 (WiFi/Ethernet/module)
+ * - Weather API credentials (provider TBD)
  * - HTTP client implementation
  * - JSON parsing
  *
@@ -26,7 +26,7 @@ namespace ReptileSim {
  */
 void updateWeather(GameState& state, float dt)
 {
-    // Without ESP32-C6 and WiFi, simulate seasonal weather patterns
+    // Without network integration, simulate seasonal weather patterns
     // Day of year (1-365)
     uint32_t day_of_year = (state.game_day - 1) % 365 + 1;
 
@@ -52,8 +52,8 @@ void updateWeather(GameState& state, float dt)
         state.economy.electricity_cost += 0.02f * dt;
     }
 
-    // TODO: Implement ESP32-C6 WiFi coprocessor communication
-    // TODO: Add OpenWeatherMap API integration
+    // TODO: Implement ESP32-P4 network integration
+    // TODO: Add weather API integration (provider TBD)
     // TODO: Parse JSON weather data
     // TODO: Implement alert system for extreme weather
     // TODO: Add storm/power outage correlation

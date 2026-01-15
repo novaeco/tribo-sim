@@ -1,7 +1,7 @@
 # REPTILE SIM: Professional Breeding Simulator
 
 **Type:** Hardcore Professional Simulator / Serious Game / Zootechnical Tool
-**Hardware:** ESP32-P4 (Display/UI) + ESP32-C6 (🚧 planned for Weather API)
+**Hardware:** ESP32-P4 (Display/UI, Weather API planned on P4)
 **Objective:** Professional Training, Breeding Management, Research
 
 ---
@@ -25,8 +25,8 @@ More than a game, REPTILE SIM is a portable laboratory that simulates invisible 
 |-----------|-------------|
 | MCU | ESP32-P4 (Dual Core + LP Core, 360MHz) |
 | Display | 7" 1024x600 MIPI-DSI (JD9165BA) |
-| Touch | GT911 (I2C: GPIO7/GPIO8) |
-| WiFi | ESP32-C6 co-processor (🚧 planned) |
+| Touch | GT911 (I2C: GPIO22/GPIO23) |
+| WiFi | ESP32-P4 network stack (🚧 planned, no ESP32-C6) |
 | Storage | MicroSD (SDMMC Slot 0) for saves |
 
 ---
@@ -71,7 +71,7 @@ More than a game, REPTILE SIM is a portable laboratory that simulates invisible 
 
 - 🚧 Interactive touch UI with buttons and navigation
 - 🚧 Save/load game state implementation
-- 🚧 ESP32-C6 real weather API integration
+- 🚧 ESP32-P4 real weather API integration
 - 🚧 Career mode progression system
 - 🚧 Crisis management scenarios
 - 🚧 Genetics laboratory sandbox
@@ -282,7 +282,7 @@ Copyright (c) 2026. All rights reserved.
   - ✅ Cleaned up placeholder files (ui_bridge.c, app_tasks.c)
   - ✅ Fixed CPU frequency documentation (360MHz)
   - ✅ Updated README to reflect actual vs planned features
-  - ✅ Documented ESP32-C6 as future work
+  - ✅ Documented weather API as future work on ESP32-P4
   - 📊 Project now 100% functional with all simulation mechanics active
 - **v2.0** (2026-01-12): Architecture refactor with 3-tier design (BSP/Core/App)
 - **v1.0** (2026-01-08): Initial terrarium controller prototype
