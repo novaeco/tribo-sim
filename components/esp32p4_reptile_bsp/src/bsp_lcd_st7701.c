@@ -44,6 +44,13 @@ typedef struct {
 #define ST7701_CMD_BK1_SPD2      0xC2  // Source EQ2 Setting
 #define ST7701_CMD_BK1_MIPISET1  0xD0  // MIPI Setting 1
 
+typedef struct {
+    uint8_t cmd;
+    uint8_t data[16];
+    uint8_t data_len;
+    uint16_t delay_ms;
+} jd9165ba_cmd_t;
+
 static esp_err_t panel_st7701_reset(esp_lcd_panel_t *panel)
 {
     st7701_panel_t *st7701 = __containerof(panel, st7701_panel_t, base);
@@ -64,35 +71,71 @@ static esp_err_t panel_st7701_init(esp_lcd_panel_t *panel)
     st7701_panel_t *st7701 = __containerof(panel, st7701_panel_t, base);
     esp_lcd_panel_io_handle_t io = st7701->io;
 
-    // Sleep out
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, LCD_CMD_SLPOUT, NULL, 0), TAG, "send command failed");
-    vTaskDelay(pdMS_TO_TICKS(120));
+    const jd9165ba_cmd_t init_cmds[] = {
+        {0x30, {0x00}, 1, 0},
+        {0xF7, {0x49, 0x61, 0x02, 0x00}, 4, 0},
+        {0x30, {0x01}, 1, 0},
+        {0x04, {0x0C}, 1, 0},
+        {0x05, {0x00}, 1, 0},
+        {0x06, {0x00}, 1, 0},
+        {0x0B, {0x11}, 1, 0},
+        {0x17, {0x00}, 1, 0},
+        {0x20, {0x04}, 1, 0},
+        {0x1F, {0x05}, 1, 0},
+        {0x23, {0x00}, 1, 0},
+        {0x25, {0x19}, 1, 0},
+        {0x28, {0x18}, 1, 0},
+        {0x29, {0x04}, 1, 0},
+        {0x2A, {0x01}, 1, 0},
+        {0x2B, {0x04}, 1, 0},
+        {0x2C, {0x01}, 1, 0},
+        {0x30, {0x02}, 1, 0},
+        {0x01, {0x22}, 1, 0},
+        {0x03, {0x12}, 1, 0},
+        {0x04, {0x00}, 1, 0},
+        {0x05, {0x64}, 1, 0},
+        {0x0A, {0x08}, 1, 0},
+        {0x0B, {0x0A, 0x1A, 0x0B, 0x0D, 0x0D, 0x11, 0x10, 0x06, 0x08, 0x1F, 0x1D}, 11, 0},
+        {0x0C, {0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D}, 11, 0},
+        {0x0D, {0x16, 0x1B, 0x0B, 0x0D, 0x0D, 0x11, 0x10, 0x07, 0x09, 0x1E, 0x1C}, 11, 0},
+        {0x0E, {0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D}, 11, 0},
+        {0x0F, {0x16, 0x1B, 0x0D, 0x0B, 0x0D, 0x11, 0x10, 0x1C, 0x1E, 0x09, 0x07}, 11, 0},
+        {0x10, {0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D}, 11, 0},
+        {0x11, {0x0A, 0x1A, 0x0D, 0x0B, 0x0D, 0x11, 0x10, 0x1D, 0x1F, 0x08, 0x06}, 11, 0},
+        {0x12, {0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D}, 11, 0},
+        {0x14, {0x00, 0x00, 0x11, 0x11}, 4, 0},
+        {0x18, {0x99}, 1, 0},
+        {0x30, {0x06}, 1, 0},
+        {0x12, {0x36, 0x2C, 0x2E, 0x3C, 0x38, 0x35, 0x35, 0x32, 0x2E, 0x1D, 0x2B, 0x21, 0x16, 0x29}, 14, 0},
+        {0x13, {0x36, 0x2C, 0x2E, 0x3C, 0x38, 0x35, 0x35, 0x32, 0x2E, 0x1D, 0x2B, 0x21, 0x16, 0x29}, 14, 0},
+        {0x30, {0x0A}, 1, 0},
+        {0x02, {0x4F}, 1, 0},
+        {0x0B, {0x40}, 1, 0},
+        {0x12, {0x3E}, 1, 0},
+        {0x13, {0x78}, 1, 0},
+        {0x30, {0x0D}, 1, 0},
+        {0x0D, {0x04}, 1, 0},
+        {0x10, {0x0C}, 1, 0},
+        {0x11, {0x0C}, 1, 0},
+        {0x12, {0x0C}, 1, 0},
+        {0x13, {0x0C}, 1, 0},
+        {0x30, {0x00}, 1, 0},
+        {LCD_CMD_SLPOUT, {0}, 0, 120},
+        {LCD_CMD_DISPON, {0}, 0, 20},
+    };
 
-    // Command2 BKx Selection: Enable Command2 Part1
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_CND2BKxSEL, (uint8_t[]){0x77, 0x01, 0x00, 0x00, 0x10}, 5), TAG, "send command failed");
+    for (size_t i = 0; i < sizeof(init_cmds) / sizeof(init_cmds[0]); i++) {
+        if (init_cmds[i].cmd != 0 || init_cmds[i].data_len > 0) {
+            ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, init_cmds[i].cmd, init_cmds[i].data,
+                                                          init_cmds[i].data_len),
+                                TAG, "send command failed");
+        }
+        if (init_cmds[i].delay_ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(init_cmds[i].delay_ms));
+        }
+    }
 
-    // Power Control registers
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_BK1_VRHS, (uint8_t[]){0x4D}, 1), TAG, "send command failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_BK1_VCOM, (uint8_t[]){0x43}, 1), TAG, "send command failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_BK1_VGHSS, (uint8_t[]){0x07}, 1), TAG, "send command failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_BK1_TESTCMD, (uint8_t[]){0x80}, 1), TAG, "send command failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_BK1_VGLS, (uint8_t[]){0x49}, 1), TAG, "send command failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_BK1_PWCTLR1, (uint8_t[]){0x85}, 1), TAG, "send command failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_BK1_PWCTLR2, (uint8_t[]){0x20}, 1), TAG, "send command failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_BK1_SPD1, (uint8_t[]){0x78}, 1), TAG, "send command failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_BK1_SPD2, (uint8_t[]){0x78}, 1), TAG, "send command failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_BK1_MIPISET1, (uint8_t[]){0x88}, 1), TAG, "send command failed");
-
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Disable Command2
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7701_CMD_CND2BKxSEL, (uint8_t[]){0x77, 0x01, 0x00, 0x00, 0x00}, 5), TAG, "send command failed");
-
-    // Display on
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, LCD_CMD_DISPON, NULL, 0), TAG, "send command failed");
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    ESP_LOGI(TAG, "ST7701 panel initialized");
+    ESP_LOGI(TAG, "JD9165BA init sequence applied");
     return ESP_OK;
 }
 
