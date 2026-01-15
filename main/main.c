@@ -64,18 +64,23 @@ static lv_obj_t *g_alert_msgbox = NULL;
 
 // Multi-terrarium management
 static uint32_t g_selected_terrarium_id = 1;
-static lv_obj_t *g_terrarium_list = NULL;
 
 // Multi-reptile management
 static uint32_t g_selected_reptile_id = 1;
-static lv_obj_t *g_reptile_list = NULL;
 
 // ====================================================================================
 // FORWARD DECLARATIONS
 // ====================================================================================
 
+typedef enum {
+    ALERT_INFO,
+    ALERT_WARNING,
+    ALERT_CRITICAL
+} alert_type_t;
+
 static void save_game_state(void);
 static void load_game_state(void);
+static void show_alert(alert_type_t type, const char *title, const char *message);
 
 static void lvgl_self_test_timer_cb(lv_timer_t *timer)
 {
@@ -128,12 +133,12 @@ static void ui_update_task(void *arg)
     const TickType_t period = pdMS_TO_TICKS(33); // ~30 FPS
 
     while (1) {
+        uint32_t day = reptile_engine_get_day();
+        float hours = reptile_engine_get_time_hours();
+        int reptile_count = reptile_engine_get_reptile_count();
+        int terrarium_count = reptile_engine_get_terrarium_count();
+
         if (g_label_time && g_label_stats) {
-            // Get data from C++ engine
-            uint32_t day = reptile_engine_get_day();
-            float hours = reptile_engine_get_time_hours();
-            int reptile_count = reptile_engine_get_reptile_count();
-            int terrarium_count = reptile_engine_get_terrarium_count();
 
             // Update time label
             char time_buf[64];
@@ -299,12 +304,6 @@ static void load_game_state(void)
 // ALERT SYSTEM
 // ====================================================================================
 
-typedef enum {
-    ALERT_INFO,
-    ALERT_WARNING,
-    ALERT_CRITICAL
-} alert_type_t;
-
 static void alert_msgbox_close_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -336,21 +335,21 @@ static void show_alert(alert_type_t type, const char *title, const char *message
             break;
     }
 
-    // Create message box
-    static const char *btns[] = {"OK", ""};
-    g_alert_msgbox = lv_msgbox_create(NULL, title, message, btns, false);
+    // Create message box (LVGL 9 API)
+    g_alert_msgbox = lv_msgbox_create(NULL);
     lv_obj_set_style_bg_color(g_alert_msgbox, lv_color_hex(0x1F1B24), 0);
 
     // Style title
-    lv_obj_t *title_label = lv_msgbox_get_title(g_alert_msgbox);
+    lv_obj_t *title_label = lv_msgbox_add_title(g_alert_msgbox, title);
     lv_obj_set_style_text_color(title_label, title_color, 0);
 
     // Style content
-    lv_obj_t *content_label = lv_msgbox_get_text(g_alert_msgbox);
+    lv_obj_t *content_label = lv_msgbox_add_text(g_alert_msgbox, message);
     lv_obj_set_style_text_color(content_label, lv_color_hex(0xCCCCCC), 0);
 
-    // Add close callback
-    lv_obj_add_event_cb(g_alert_msgbox, alert_msgbox_close_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    // Add close button
+    lv_obj_t *close_btn = lv_msgbox_add_footer_button(g_alert_msgbox, "OK");
+    lv_obj_add_event_cb(close_btn, alert_msgbox_close_cb, LV_EVENT_CLICKED, NULL);
 
     ESP_LOGI(TAG, "Alert shown: [%s] %s", title, message);
 }
