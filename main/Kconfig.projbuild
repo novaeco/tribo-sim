@@ -59,31 +59,31 @@ menu "Application Configuration"
 
         config APP_LCD_HSYNC
             int "HSYNC pulse width"
-            default 4
+            default 24
 
         config APP_LCD_HBP
             int "Horizontal back porch"
-            default 8
+            default 136
 
         config APP_LCD_HFP
             int "Horizontal front porch"
-            default 16
+            default 160
 
         config APP_LCD_VSYNC
             int "VSYNC pulse width"
-            default 4
+            default 2
 
         config APP_LCD_VBP
             int "Vertical back porch"
-            default 8
+            default 21
 
         config APP_LCD_VFP
             int "Vertical front porch"
-            default 16
+            default 12
 
         config APP_LCD_PCLK
             int "Pixel clock (Hz)"
-            default 20000000
+            default 51200000
 
         choice APP_LCD_RGB_ORDER
             prompt "RGB color order"

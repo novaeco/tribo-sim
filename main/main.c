@@ -280,7 +280,7 @@ static void save_game_state(void)
 {
     ESP_LOGI(TAG, "Saving complete game state to SPIFFS...");
 
-    bool success = reptile_engine_save_game("/spiffs/savegame.txt");
+    bool success = reptile_engine_save_game("/storage/savegame.txt");
     if (success) {
         ESP_LOGI(TAG, "Game saved successfully (reptiles, terrariums, economy)");
     } else {
@@ -292,7 +292,7 @@ static void load_game_state(void)
 {
     ESP_LOGI(TAG, "Loading complete game state from SPIFFS...");
 
-    bool success = reptile_engine_load_game("/spiffs/savegame.txt");
+    bool success = reptile_engine_load_game("/storage/savegame.txt");
     if (success) {
         ESP_LOGI(TAG, "Game loaded successfully");
     } else {
